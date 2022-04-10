@@ -11,3 +11,7 @@ You'll need the version of python in the .python-version file. I suggest using p
 ## Run the app
 
 1. `uvicorn main:app --reload`
+
+## Send a request to the API
+
+1. Example: `curl -H "Content-Type: application/json" localhost:8000/band -X POST -d '{"name": "a name", "admin": "me", "location": "somewhere"}'`
