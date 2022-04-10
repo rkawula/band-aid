@@ -8,3 +8,6 @@ You'll need the version of python in the .python-version file. I suggest using p
 2. `pyenv install 3.10.1`
 3. `pip install -r requirements.txt`
 
+## Run the app
+
+1. `uvicorn main:app --reload`
