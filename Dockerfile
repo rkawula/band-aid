@@ -1,0 +1,5 @@
+FROM mysql/mysql-server:8.0.28
+
+ENV MYSQL_DATABASE bandaid
+ENV MYSQL_USER sqluser
+ENV MYSQL_ROOT_PASSWORD root

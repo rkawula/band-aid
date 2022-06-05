@@ -12,6 +12,12 @@ You'll need the version of python in the .python-version file. I suggest using p
 
 1. `uvicorn main:app --reload`
 
+## Starting Docker
+
+1.  cd to root project folder
+2. `docker build . -t mysql`
+3. `docker run -d -p 3306:3306 --name mysql -e MYSQL_PASSWORD=<Replace Me!> mysql`
+
 ## Send a request to the API
 
 1. Example: `curl -H "Content-Type: application/json" localhost:8000/band -X POST -d '{"name": "a name", "admin": "me", "location": "somewhere"}'`
