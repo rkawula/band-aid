@@ -26,4 +26,4 @@ class PostUserLogin(BaseModel):
 
 class JwtUser(BaseModel):
     user_id: int
-    email: str
+    email: str | None = None

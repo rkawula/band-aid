@@ -1,18 +1,12 @@
-import json
-import os
-
-import pytest
-from fastapi import HTTPException
-from sqlalchemy import create_engine
 from unittest import mock
-from sqlalchemy.orm import sessionmaker, Session
 
-
-from main import get_database, app, add_and_flush
-from base_models.band_models import PostUserRequest
-from database_models.models import User, EmailVerification, Base
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
 from sqlalchemy.orm import exc
+from sqlalchemy.orm import sessionmaker
+
+from database_models.models import User, EmailVerification, Base
+from main import get_database, app
 
 DATABASE_URL = "sqlite:///./test_database.db"
 engine = create_engine(
@@ -33,6 +27,7 @@ def override_get_db():
     finally:
         db.close()
 
+
 app.dependency_overrides[get_database] = override_get_db
 
 valid_data = {
@@ -47,6 +42,8 @@ invalid_data = {
     "email": "jbourne@gmail.com",
     "password": "test123"
 }
+
+
 def test_valid_register_user():
     resp = client.post("/register", json=valid_data)
     assert resp.status_code == 200
@@ -54,12 +51,14 @@ def test_valid_register_user():
     assert len(db.query(EmailVerification).all()) == 1
     assert len(db.query(User).all()) == 1
 
+
 def test_duplicate_email_register_user():
     resp = client.post("/register", json=valid_data)
     assert resp.status_code == 400
     db = next(override_get_db())
     assert len(db.query(EmailVerification).all()) == 1
     assert len(db.query(User).all()) == 1
+
 
 def test_invalid_data_register_user():
     resp = client.post("/register", json=invalid_data)
@@ -70,7 +69,7 @@ def test_invalid_data_register_user():
 
 
 def test_bad_db_register_user():
-    with mock.patch("main.add_and_commit") as add_mock:
+    with mock.patch("main.add_and_flush") as add_mock:
         add_mock.side_effect = exc.sa_exc.SQLAlchemyError()
         valid_data["email"] = "newemail@gmail.com"
         resp = client.post("/register", json=valid_data)
@@ -90,5 +89,3 @@ def test_bad_db_register_user():
 #         db = next(override_get_db())
 #         assert len(db.query(EmailVerification).all()) == 1
 #         assert len(db.query(User).all()) == 1
-
-

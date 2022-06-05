@@ -48,7 +48,7 @@ def generate_code():
 
 async def get_current_user(token: str = Depends(JwtBearer())):
     decoded = decode_jwt(token)
-    user = JwtUser(user_id=decoded.user_id)
+    user = JwtUser(user_id=decoded['user_id'])
     return user
 
 
@@ -70,8 +70,7 @@ async def post_create_band(post_band_request: PostBandRequest, user: JwtUser = D
         location=post_band_request.location
     )
     try:
-        db.add(band)
-        db.commit()
+        add_and_flush(db, band)
         bm = BandMember(user_id=user.user_id, band_id=band.id, admin=True)
         db.add(bm)
         db.commit()
@@ -200,9 +199,31 @@ async def print_band_members(db: Session = Depends(get_database)):
 async def print_verifications(db: Session = Depends(get_database)):
     results = db.query(EmailVerification).all()
     return results
-# =====TESTING =====
 
+
+def populate_db():
+    db = next(get_database())
+    user1 = User(
+        first_name="Jason",
+        last_name="Bourne",
+        email="jason@gmail.com",
+        password_hash=hash_password("test"),
+        location="CA"
+    )
+    user2 = User(
+        first_name="Dexter",
+        last_name="Morgan",
+        email="dexter@gmail.com",
+        password_hash=hash_password("test"),
+        location="FL"
+    )
+    db.add(user1)
+    db.add(user2)
+    db.commit()
+
+# =====TESTING =====
 if __name__ == "__main__":
-    # Base.metadata.drop_all(bind=engine)
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    populate_db()
     uvicorn.run(app, host="localhost", port=8000)
