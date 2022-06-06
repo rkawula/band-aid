@@ -59,8 +59,14 @@ async def root():
 
 @app.get("/band/{id}")
 async def get_band(id: int, db: Session = Depends(get_database)):
-    return {"some": id}
+    band = db.query(Band).where(Band.id == id).first()
+    return band
 
+@app.get("/bandmembers/{band_id}")
+async def get_band_members(band_id: int, db: Session = Depends(get_database)):
+    members = db.query(User.id, User.first_name, User.last_name).where(User.id.in_(
+        db.query(BandMember.user_id).where(band_id == BandMember.band_id))).all()
+    return members
 
 @app.post("/band")
 async def post_create_band(post_band_request: PostBandRequest, user: JwtUser = Depends(get_current_user),
@@ -217,11 +223,28 @@ def populate_db():
         password_hash=hash_password("test"),
         location="FL"
     )
+    user3 = User(
+        first_name="Dean",
+        last_name="Winchester",
+        email="dw@gmail.com",
+        password_hash=hash_password("test"),
+        location="KS"
+    )
+    user1_band = Band(name="Assassins", location="Spain")
+
     db.add(user1)
     db.add(user2)
+    db.add(user3)
+    db.add(user1_band)
+    db.flush()
+    bm = BandMember(band_id=user1_band.id,user_id=user1.id,admin=True)
+    bm2 = BandMember(band_id=user1_band.id, user_id=user2.id, admin=False)
+    db.add(bm)
+    db.add(bm2)
     db.commit()
-
 # =====TESTING =====
+
+
 if __name__ == "__main__":
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
