@@ -142,11 +142,11 @@ async def get_user(id: int, db: Session = Depends(get_database)):
     try:
         user = db.query(User).where(User.id == id).first()
     except exc.sa_exc.SQLAlchemyError as err:
-        raise HTTPException(status_code=500, detail="Could get user")
+        raise HTTPException(status_code=500, detail="Could not get user")
     return user
 
 
-@app.post("/update_user")
+@app.put("/update_user")
 async def update_user(user_request: PostUserRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
     try:
         dbuser = db.query(User).where(User.id == user.user_id).first()
@@ -157,13 +157,17 @@ async def update_user(user_request: PostUserRequest, db: Session = Depends(get_d
             dbuser.password_hash = hash_password(user_request.password)
         dbuser.location = user_request.location
         db.commit()
+
         # TODO update long/lat with new updated location
+        # TODO if email changes set verified to false
+        #  and send out new verification code + email
+        #  and remove any existing verification code entries if not verified
     except exc.sa_exc.SQLAlchemyError as err:
-        raise HTTPException(status_code=500, detail="Could update user")
+        raise HTTPException(status_code=500, detail="Could not update user")
     return {"Success"}
 
 
-@app.post("/update_band")
+@app.put("/update_band")
 async def update_band(band_request: PostBandRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
     try:
         bm = db.query(BandMember).where(BandMember.band_id == band_request.id).where(BandMember.user_id == user.user_id).first()
@@ -180,7 +184,7 @@ async def update_band(band_request: PostBandRequest, db: Session = Depends(get_d
 
 
 @app.delete("/delete_band")
-async def update_band(band_request: PostBandRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+async def delete_band(band_request: PostBandRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
     try:
         bm = db.query(BandMember).where(BandMember.band_id == band_request.id).where(BandMember.user_id == user.user_id).first()
         if not bm.admin:
@@ -206,7 +210,7 @@ async def verify_user_email(code: str, db: Session = Depends(get_database)):
         else:
             raise HTTPException(status_code=400, detail="Invalid verification code")
     except exc.sa_exc.SQLAlchemyError:
-        raise HTTPException(status_code=500, detail="Could verify email, try again later")
+        raise HTTPException(status_code=500, detail="Could not verify email, try again later")
     return "Success"
 
 
@@ -303,8 +307,8 @@ def populate_db():
         location="CA"
     )
     user2 = User(
-        first_name="Dexter",
-        last_name="Morgan",
+        first_name="Dextera",
+        last_name="Morgana",
         email="dexter@gmail.com",
         password_hash=hash_password("test"),
         location="FL"
@@ -318,15 +322,11 @@ def populate_db():
     )
     user1_band = Band(name="Assassins", location="Spain")
 
-    db.add(user1)
-    db.add(user2)
-    db.add(user3)
-    db.add(user1_band)
+    db.add_all([user1, user2, user3, user1_band])
     db.flush()
     bm = BandMember(band_id=user1_band.id,user_id=user1.id,admin=True)
     bm2 = BandMember(band_id=user1_band.id, user_id=user2.id, admin=False)
-    db.add(bm)
-    db.add(bm2)
+    db.add_all([bm, bm2])
     db.commit()
 # =====TESTING =====
 

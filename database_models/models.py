@@ -6,7 +6,7 @@ Base = declarative_base()
 
 class Band(Base):
     __tablename__ = 'band'
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String)
     location = Column(String)
 

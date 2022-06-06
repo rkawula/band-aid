@@ -14,6 +14,7 @@ class PostUserRequest(BaseModel):
     longitude: str | None = None
     latitude: str | None = None
 
+
 class PostSendInvite(BaseModel):
     user_id:int
     band_id:int
