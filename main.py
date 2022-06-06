@@ -59,14 +59,22 @@ async def root():
 
 @app.get("/band/{id}")
 async def get_band(id: int, db: Session = Depends(get_database)):
-    band = db.query(Band).where(Band.id == id).first()
+    try:
+        band = db.query(Band).where(Band.id == id).first()
+    except exc.sa_exc.SQLAlchemyError:
+        raise HTTPException(status_code=500, detail="Unable to get band")
     return band
+
 
 @app.get("/bandmembers/{band_id}")
 async def get_band_members(band_id: int, db: Session = Depends(get_database)):
-    members = db.query(User.id, User.first_name, User.last_name).where(User.id.in_(
-        db.query(BandMember.user_id).where(band_id == BandMember.band_id))).all()
+    try:
+        members = db.query(User.id, User.first_name, User.last_name).where(User.id.in_(
+            db.query(BandMember.user_id).where(band_id == BandMember.band_id))).all()
+    except exc.sa_exc.SQLAlchemyError:
+        raise HTTPException(status_code=500, detail="Unable get band members")
     return members
+
 
 @app.post("/band")
 async def post_create_band(post_band_request: PostBandRequest, user: JwtUser = Depends(get_current_user),
@@ -140,21 +148,37 @@ async def get_user(id: int, db: Session = Depends(get_database)):
 
 @app.get("/verify/{code}")
 async def verify_user_email(code: str, db: Session = Depends(get_database)):
-    email_verification = db.query(EmailVerification).where(EmailVerification.code == code).first()
-    if email_verification:
-        user = db.query(User).where(User.id == email_verification.id).first()
-        user.email_verified = True
-        db.delete(email_verification)
-        db.commit()
+    try:
+        email_verification = db.query(EmailVerification).where(EmailVerification.code == code).first()
+        if email_verification:
+            user = db.query(User).where(User.id == email_verification.id).first()
+            user.email_verified = True
+            db.delete(email_verification)
+            db.commit()
+        else:
+            raise HTTPException(status_code=400, detail="Invalid verification code")
+    except exc.sa_exc.SQLAlchemyError:
+        raise HTTPException(status_code=500, detail="Could verify email, try again later")
     return "Success"
 
 
-@app.post("/accept_invite", dependencies=[Depends(JwtBearer())])
-async def accept_invite(pai: PostAcceptInvite, db: Session = Depends(get_database)):
+@app.post("/accept_invite")
+async def accept_invite(pai: PostAcceptInvite, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+    try:
+        invite = db.query(BandInvite).where(BandInvite.code == pai.code).where(user.user_id == BandInvite.user_id).first()
+        if invite:
+            bm = BandMember(band_id=invite.band_id, user_id=user.user_id, admin=False)
+            db.add(bm)
+            db.delete(invite)
+            db.commit()
+        else:
+            raise HTTPException(status_code=400, detail="Invalid invite")
+    except exc.sa_exc.SQLAlchemyError:
+        raise HTTPException(status_code=500, detail="Could verify invite, try again later")
     pass
 
 
-@app.post("/send_invite", dependencies=[Depends(JwtBearer())])
+@app.post("/send_invite")
 async def send_invite(psi: PostSendInvite, db: Session = Depends(get_database), user: JwtUser = Depends(get_current_user)):
     try:
         band_member = db.query(BandMember).where(BandMember.user_id == user.user_id). \
@@ -224,11 +248,11 @@ def populate_db():
         location="FL"
     )
     user3 = User(
-        first_name="Dean",
-        last_name="Winchester",
-        email="dw@gmail.com",
+        first_name="Sire",
+        last_name="Denathrius",
+        email="sire@gmail.com",
         password_hash=hash_password("test"),
-        location="KS"
+        location="Revendreth"
     )
     user1_band = Band(name="Assassins", location="Spain")
 
