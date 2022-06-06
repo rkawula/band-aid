@@ -178,6 +178,20 @@ async def accept_invite(pai: PostAcceptInvite, db: Session = Depends(get_databas
     pass
 
 
+@app.post("/decline_invite")
+async def decline_invite(pai: PostAcceptInvite, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+    try:
+        invite = db.query(BandInvite).where(BandInvite.code == pai.code).where(user.user_id == BandInvite.user_id).first()
+        if invite:
+            db.delete(invite)
+            db.commit()
+        else:
+            raise HTTPException(status_code=400, detail="Invalid invite")
+    except exc.sa_exc.SQLAlchemyError:
+        raise HTTPException(status_code=500, detail="Could verify invite, try again later")
+    pass
+
+
 @app.post("/send_invite")
 async def send_invite(psi: PostSendInvite, db: Session = Depends(get_database), user: JwtUser = Depends(get_current_user)):
     try:
