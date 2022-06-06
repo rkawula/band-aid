@@ -179,6 +179,21 @@ async def update_band(band_request: PostBandRequest, db: Session = Depends(get_d
     return {"Success"}
 
 
+@app.delete("/delete_band")
+async def update_band(band_request: PostBandRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+    try:
+        bm = db.query(BandMember).where(BandMember.band_id == band_request.id).where(BandMember.user_id == user.user_id).first()
+        if not bm.admin:
+            raise HTTPException(status_code=400, detail="Not and admin")
+        band = db.query(Band).where(Band.id == band_request.id).first()
+
+        db.delete(BandMember).where(BandMember.user_id.in_(db.query(BandMember.user_id).where(BandMember.band_id == band_request.id)))
+        db.delete(band)
+        db.commit()
+    except exc.sa_exc.SQLAlchemyError:
+        raise HTTPException(status_code=500, detail="Could not delete band")
+    return {"Success"}
+
 @app.get("/verify/{code}")
 async def verify_user_email(code: str, db: Session = Depends(get_database)):
     try:
