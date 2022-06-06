@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 class PostBandRequest(BaseModel):
+    id: int | None = None
     name: str
     location: str
 

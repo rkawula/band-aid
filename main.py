@@ -146,6 +146,39 @@ async def get_user(id: int, db: Session = Depends(get_database)):
     return user
 
 
+@app.post("/update_user")
+async def update_user(user_request: PostUserRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+    try:
+        dbuser = db.query(User).where(User.id == user.user_id).first()
+        dbuser.first_name = user_request.first_name
+        dbuser.last_name = user_request.last_name
+        dbuser.email = user_request.email
+        if user_request.password:
+            dbuser.password_hash = hash_password(user_request.password)
+        dbuser.location = user_request.location
+        db.commit()
+        # TODO update long/lat with new updated location
+    except exc.sa_exc.SQLAlchemyError as err:
+        raise HTTPException(status_code=500, detail="Could update user")
+    return {"Success"}
+
+
+@app.post("/update_band")
+async def update_band(band_request: PostBandRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+    try:
+        bm = db.query(BandMember).where(BandMember.band_id == band_request.id).where(BandMember.user_id == user.user_id).first()
+        if not bm.admin:
+            raise HTTPException(status_code=400, detail="Not and admin")
+        band = db.query(Band).where(Band.id == band_request.id).first()
+
+        band.name = band_request.name
+        band.location = band_request.location
+        db.commit()
+    except exc.sa_exc.SQLAlchemyError as err:
+        raise HTTPException(status_code=500, detail="Could not update band")
+    return {"Success"}
+
+
 @app.get("/verify/{code}")
 async def verify_user_email(code: str, db: Session = Depends(get_database)):
     try:
