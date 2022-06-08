@@ -3,6 +3,7 @@ import string
 import time
 import uvicorn
 from fastapi import FastAPI, Depends, HTTPException, Request
+from database_models.db_connector import get_database
 from sqlalchemy.orm import Session
 
 from emails import Email
@@ -20,7 +21,7 @@ from database_models.models import (
     BandMember,
     BandInvite,
     EmailVerification,
-    Band
+    Band, Notification
 )
 from auth.jwt_handler import sign_jwt, decode_jwt
 from auth.jwt_bearer import JwtBearer
@@ -32,15 +33,6 @@ import random
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-
-
-def get_database():
-    try:
-        db = DbSession()
-        yield db
-    finally:
-        db.close()
-
 
 def generate_code():
     chars = string.ascii_letters + string.digits
@@ -66,14 +58,14 @@ def get_current_user_partially_protected(request: Request):
         except:
             return None
 
-    auth = has_auth_header()
-    if auth:
-        token:str = auth
+    token = has_auth_header()
+    if token:
         decoded = decode_jwt(token)
+        if decoded == {}:
+            raise HTTPException(status_code=401, detail="Invalid token")
         return JwtUser(user_id=decoded['user_id'])
     else:
         return None
-
 
 
 @app.get("/")
@@ -115,6 +107,7 @@ async def post_create_band(post_band_request: PostBandRequest, user: JwtUser = D
     except exc.sa_exc.SQLAlchemyError:
         raise HTTPException(status_code=500, detail="Unable to create band")
     return {"Success"}
+
 
 @app.get("/verify_band_code/{band_id}/{invite_code}")
 async def verify_band_code(band_id: int, invite_code: str, db: Session = Depends(get_database),
@@ -201,6 +194,7 @@ async def get_user(id: int, db: Session = Depends(get_database)):
     return user
 
 
+
 @app.put("/update_user")
 async def update_user(user_request: PostUserRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
     try:
@@ -213,6 +207,7 @@ async def update_user(user_request: PostUserRequest, db: Session = Depends(get_d
         dbuser.location = user_request.location
         db.commit()
 
+        # TODO To revoke tokens, add date column to user for rejecting tokens given before x date
         # TODO update long/lat with new updated location
         # TODO if email changes set verified to false
         #  and send out new verification code + email
@@ -252,6 +247,7 @@ async def delete_band(band_request: PostBandRequest, db: Session = Depends(get_d
     except exc.sa_exc.SQLAlchemyError:
         raise HTTPException(status_code=500, detail="Could not delete band")
     return {"Success"}
+
 
 @app.get("/verify/{code}")
 async def verify_user_email(code: str, db: Session = Depends(get_database)):
@@ -326,6 +322,17 @@ async def user_login(pul: PostUserLogin, db: Session = Depends(get_database)):
         return sign_jwt(user)
     raise HTTPException(status_code=400, detail="Email/Password does not exist")
 
+
+@app.put("/read_notification/{id}")
+async def read_notification(id:int, db: Session = Depends(get_database), user: JwtUser = Depends(get_current_user())):
+    notif: Notification = db.query(Notification).where(Notification.id == id).first()
+    if notif is None:
+        raise HTTPException(status_code=404, detail="Notification does not exist")
+    if notif.to_user_id != user.user_id:
+        raise HTTPException(status_code=401, detail="That is not your message, but you already know this")
+    notif.read = True
+    db.commit()
+    return {"Success"}
 
 # =====TESTING =====
 @app.get("/users", tags=['test'])

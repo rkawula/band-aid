@@ -301,6 +301,19 @@ def test_verify_band_code_has_user_and_different_user_is_req():
     resp = client.get("/verify_band_code/{0}/{1}".format(band.id,bi.code), headers=header)
     assert resp.status_code == 403
     #403
+def test_verify_band_code_has_invalid_user():
+    db = next(override_get_db())
+    header = {
+        "Authorization":"Bearer " + sign_jwt(db.query(User).where(User.id==1).first())+'a'
+    }
+    band = Band(name="test2", location="home")
+    db.add(band)
+    db.flush()
+    bi = BandInvite(band_id=band.id, code="ABCD1234", expiration=time.time() + 600)
+    db.add(bi)
+    db.commit()
+    resp = client.get("/verify_band_code/{0}/{1}".format(band.id,bi.code),headers=header)
+    assert resp.status_code == 401
 
 
 def test_update_band():

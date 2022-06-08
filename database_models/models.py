@@ -1,5 +1,7 @@
+import enum
+
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column, String, Integer, Boolean, Float, ForeignKey, BigInteger
+from sqlalchemy import Column, String, Integer, Boolean, Float, ForeignKey, BigInteger, DateTime, func
 
 Base = declarative_base()
 
@@ -42,4 +44,21 @@ class BandInvite(Base):
     band_id = Column(Integer, ForeignKey("band.id"), primary_key=True)
     user_id = Column(Integer, ForeignKey("user.id"), primary_key=True, nullable=True)
     code = Column(String(8), primary_key=True)
-    expiration = Column(BigInteger)
+    expiration = Column(DateTime, default=func.now()+30*24*60*60)
+
+
+class NotificationType(enum.Enum):
+    high = 3
+    normal = 2
+    low = 1
+
+
+class Notification(Base):
+    __tablename__ = "notification"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    to_user_id = Column(Integer, ForeignKey("user.id"), nullable=True)
+    message = Column(String, nullable=False)
+    read = Column(Boolean, nullable=False, default=False)
+    sent = Column(Boolean, nullable=False)
+    type = Column(NotificationType, nullable=False)
+    expiration = Column(DateTime)
