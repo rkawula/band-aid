@@ -1,6 +1,8 @@
 import logging.config
+import string
+import time
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from emails import Email
@@ -41,15 +43,37 @@ def get_database():
 
 
 def generate_code():
-    chars = "ABCDEFGHJKLMNPRSTWXYZ2346789"
+    chars = string.ascii_letters + string.digits
     code = ''.join(random.choice(chars) for i in range(8))
     return code
 
 
-async def get_current_user(token: str = Depends(JwtBearer())):
-    decoded = decode_jwt(token)
-    user = JwtUser(user_id=decoded['user_id'])
-    return user
+def get_current_user(token: str = Depends(JwtBearer())):
+    try:
+        decoded = decode_jwt(token)
+    except:
+        return None
+    if decoded != {}:
+        return JwtUser(user_id=decoded['user_id'])
+    return None
+
+
+def get_current_user_partially_protected(request: Request):
+    def has_auth_header():
+        try:
+            a:str=request.headers["authorization"]
+            return a[7:]
+        except:
+            return None
+
+    auth = has_auth_header()
+    if auth:
+        token:str = auth
+        decoded = decode_jwt(token)
+        return JwtUser(user_id=decoded['user_id'])
+    else:
+        return None
+
 
 
 @app.get("/")
@@ -91,6 +115,37 @@ async def post_create_band(post_band_request: PostBandRequest, user: JwtUser = D
     except exc.sa_exc.SQLAlchemyError:
         raise HTTPException(status_code=500, detail="Unable to create band")
     return {"Success"}
+
+@app.get("/verify_band_code/{band_id}/{invite_code}")
+async def verify_band_code(band_id: int, invite_code: str, db: Session = Depends(get_database),
+                           user:JwtUser = Depends(get_current_user_partially_protected)):
+
+    # user: JwtUser = get_current_user(False)
+    band_invite = db.query(BandInvite).where(BandInvite.band_id == band_id).\
+        where(BandInvite.code == invite_code).first()
+
+    if band_invite is None:
+        raise HTTPException(status_code=404, detail="Invalid invite")
+
+    if band_invite.expiration < time.time():
+        raise HTTPException(status_code=400, detail="Expired invite")
+
+    if user is not None:
+        #band_invite meant for some user that is not the current user
+        if band_invite.user_id is not None and band_invite.user_id != user.user_id:
+            raise HTTPException(status_code=403, detail="Invalid invite")
+        #logged in and invite is meant for no userID then allow it
+        if band_invite.user_id is None:
+            return {"Success"}
+        return
+    else:
+        #Not logged in and invite is for no user id then allow it
+        if band_invite.user_id is None:
+            return {"Success"}
+        else:
+            raise HTTPException(status_code=403, detail="Invalid invite")
+
+    return
 
 
 @app.post("/register")
@@ -245,7 +300,7 @@ async def decline_invite(pai: PostAcceptInvite, db: Session = Depends(get_databa
 
 
 @app.post("/send_invite")
-async def send_invite(psi: PostSendInvite, db: Session = Depends(get_database), user: JwtUser = Depends(get_current_user)):
+async def send_invite(psi: PostSendInvite, db: Session = Depends(get_database), user: JwtUser = Depends(get_current_user())):
     try:
         band_member = db.query(BandMember).where(BandMember.user_id == user.user_id). \
             where(BandMember.band_id == psi.band_id).first()

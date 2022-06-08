@@ -11,10 +11,10 @@ class JwtBearer(HTTPBearer):
         credentials: HTTPAuthorizationCredentials = await super(JwtBearer, self).__call__(request)
         if credentials:
             if not (credentials.scheme == "Bearer" and self.verify_jwt(credentials.credentials)):
-                raise HTTPException(status_code=400, detail="Invalid Credentials")
+                raise HTTPException(status_code=401, detail="Invalid token")
             return credentials.credentials
         else:
-            raise HTTPException(status_code=400, detail="")
+            raise HTTPException(status_code=400, detail="No credentials present")
 
     def verify_jwt(self, token: str) -> bool:
         try:

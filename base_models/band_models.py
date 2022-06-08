@@ -13,19 +13,20 @@ class PostUserRequest(BaseModel):
     location: str | None = None
     longitude: str | None = None
     latitude: str | None = None
-
+    invite_code: str | None = None
+    band_id: int | None = None
 
 class PostSendInvite(BaseModel):
     user_id:int
     band_id:int
 
 class PostAcceptInvite(BaseModel):
-    code:str
+    code: str
 
 class PostUserLogin(BaseModel):
     email: str
     password: str
 
 class JwtUser(BaseModel):
-    user_id: int
+    user_id: int | None=None
     email: str | None = None

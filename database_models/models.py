@@ -1,5 +1,5 @@
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column, String, Integer, Boolean, Float, ForeignKey
+from sqlalchemy import Column, String, Integer, Boolean, Float, ForeignKey, BigInteger
 
 Base = declarative_base()
 
@@ -40,5 +40,6 @@ class BandMember(Base):
 class BandInvite(Base):
     __tablename__ = "band_invite"
     band_id = Column(Integer, ForeignKey("band.id"), primary_key=True)
-    user_id = Column(Integer, ForeignKey("user.id"), primary_key=True)
-    code = Column(String(8))
+    user_id = Column(Integer, ForeignKey("user.id"), primary_key=True, nullable=True)
+    code = Column(String(8), primary_key=True)
+    expiration = Column(BigInteger)

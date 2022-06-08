@@ -1,4 +1,5 @@
 import json
+import time
 from unittest.mock import patch
 
 import pytest
@@ -10,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 import main
 from auth.jwt_handler import sign_jwt
 from base_models.band_models import PostBandRequest
-from database_models.models import User, EmailVerification, Base, Band, BandMember
+from database_models.models import User, EmailVerification, Base, Band, BandMember, BandInvite
 from main import get_database, app
 from security.security import hash_password
 
@@ -165,9 +166,18 @@ def test_create_band():
     assert len(db.query(Band).where(Band.id == 2).all())==1
     assert len(db.query(BandMember).where(Band.id == 2).where(BandMember.user_id == user.id).all())==1
 
-    header['Authorization'] += 'invalid'
-    resp = client.post("/band", json=band_req, headers=header)
-    assert resp.status_code == 400
+def test_invalid_token():
+    band_req = {
+        "name":"a",
+        "location":"b"
+    }
+    db = next(override_get_db())
+    user = db.query(User).where(User.id == 1).first()
+    header = {
+        "Authorization":"Bearer " + sign_jwt(user)+'invalid_token'
+    }
+    resp = client.post("/band", json=band_req,headers=header)
+    assert resp.status_code == 401
 
 def test_get_user():
     resp = client.get("/user/1")
@@ -196,6 +206,102 @@ def test_update_user():
     changed_user = db.query(User).where(User.id == 2).first()
     assert changed_user.first_name == user_req['first_name']
     assert changed_user.last_name == user_req['last_name']
+
+def test_verify_band_code_no_user_and_no_user_is_req():
+    db = next(override_get_db())
+    band = Band(name="test1", location="home")
+    db.add(band)
+    db.flush()
+    db.commit()
+    bi = BandInvite(band_id=band.id, code="ABCD1234", expiration=time.time()+600)
+    db.add(bi)
+    db.commit()
+    url = "/verify_band_code/{0}/{1}".format(band.id,bi.code)
+    resp = client.get(url)
+    assert resp.status_code == 200
+    #200
+def test_verify_band_code_has_user_and_no_user_req():
+    db = next(override_get_db())
+    header = {
+        "Authorization":"Bearer " + sign_jwt(db.query(User).where(User.id==1).first())
+    }
+    band = Band(name="test2", location="home")
+    db.add(band)
+    db.flush()
+    bi = BandInvite(band_id=band.id, code="ABCD1234", expiration=time.time() + 600)
+    db.add(bi)
+    db.commit()
+    resp = client.get("/verify_band_code/{0}/{1}".format(band.id,bi.code),headers=header)
+    assert resp.status_code == 200
+    #200
+def test_verity_band_code_invite_expired():
+    db = next(override_get_db())
+    header = {
+        "Authorization":"Bearer " + sign_jwt(db.query(User).where(User.id==1).first())
+    }
+    band = Band(name="test2", location="home")
+    db.add(band)
+    db.flush()
+    bi = BandInvite(band_id=band.id, code="ABCD1234", expiration=time.time() - 600)
+    db.add(bi)
+    db.commit()
+    resp = client.get("/verify_band_code/{0}/{1}".format(band.id,bi.code),headers=header)
+    assert resp.status_code == 400
+def test_verify_band_code_invalid_band_id():
+    db = next(override_get_db())
+    header = {
+        "Authorization":"Bearer " + sign_jwt(db.query(User).where(User.id==1).first())
+    }
+    band = Band(name="test2", location="home")
+    db.add(band)
+    db.flush()
+    bi = BandInvite(band_id=band.id+1000, code="ABCD1234", expiration=time.time() + 600)
+    db.add(bi)
+    db.commit()
+    resp = client.get("/verify_band_code/{0}/{1}".format(band.id,bi.code),headers=header)
+    assert resp.status_code == 404
+    #404
+def test_verify_band_code_invalid_code():
+    db = next(override_get_db())
+    header = {
+        "Authorization": "Bearer " + sign_jwt(db.query(User).where(User.id == 1).first())
+    }
+    band = Band(name="test2", location="home")
+    db.add(band)
+    db.flush()
+    bi = BandInvite(band_id=band.id, code="AAAAAAAA", expiration=time.time() + 600)
+    db.add(bi)
+    db.commit()
+    resp = client.get("/verify_band_code/{0}/{1}".format(band.id,bi.code+'a'), headers=header)
+    assert resp.status_code == 404
+
+def test_verify_band_code_no_user_and_user_is_req():
+    db = next(override_get_db())
+    band = Band(name="test2", location="home")
+    db.add(band)
+    db.flush()
+    bi = BandInvite(band_id=band.id,user_id=2, code="ABCD1234", expiration=time.time() + 600)
+    db.add(bi)
+    db.commit()
+    resp = client.get("/verify_band_code/{0}/{1}".format(band.id,bi.code))
+    assert resp.status_code == 403
+    #403
+def test_verify_band_code_has_user_and_different_user_is_req():
+    db = next(override_get_db())
+    authuser = 1
+    header = {
+        "Authorization": "Bearer " + sign_jwt(db.query(User).where(User.id == authuser).first())
+    }
+    band = Band(name="test2", location="home")
+    db.add(band)
+    db.flush()
+    bi = BandInvite(band_id=band.id, user_id=authuser+1, code="AAAAAAAA", expiration=time.time() + 600)
+    db.add(bi)
+    db.commit()
+    resp = client.get("/verify_band_code/{0}/{1}".format(band.id,bi.code), headers=header)
+    assert resp.status_code == 403
+    #403
+
 
 def test_update_band():
     # TODO test not admin
