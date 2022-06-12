@@ -1,11 +1,11 @@
 import smtplib
 import os
 from email.message import EmailMessage
-
+from decouple import config
 class Email:
     def __init__(self):
         self.sender = 'bandfinderapp@gmail.com'
-        self.email_pw = os.environ['email_pw']
+        self.email_pw = config('email_pw')
         self.port = 587
         self.smtp_domain = "smtp.gmail.com"
 

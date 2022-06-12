@@ -1,7 +1,6 @@
 import enum
-
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column, String, Integer, Boolean, Float, ForeignKey, BigInteger, DateTime, func
+from sqlalchemy import Column, String, Integer, Boolean, Float, ForeignKey, BigInteger, DateTime, func, Enum
 
 Base = declarative_base()
 
@@ -11,7 +10,8 @@ class Band(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String)
     location = Column(String)
-
+    longitude = Column(Float)
+    latitude = Column(Float)
 
 class User(Base):
     __tablename__ = 'user'
@@ -44,7 +44,7 @@ class BandInvite(Base):
     band_id = Column(Integer, ForeignKey("band.id"), primary_key=True)
     user_id = Column(Integer, ForeignKey("user.id"), primary_key=True, nullable=True)
     code = Column(String(8), primary_key=True)
-    expiration = Column(DateTime, default=func.now()+30*24*60*60)
+    expiration = Column(BigInteger, default=func.now()+30*24*60*60)
 
 
 class NotificationType(enum.Enum):
@@ -60,5 +60,17 @@ class Notification(Base):
     message = Column(String, nullable=False)
     read = Column(Boolean, nullable=False, default=False)
     sent = Column(Boolean, nullable=False)
-    type = Column(NotificationType, nullable=False)
-    expiration = Column(DateTime)
+    type = Column(Enum(NotificationType), nullable=False)
+    expiration = Column(BigInteger)
+
+class LookingForBand(Base):
+    __tablename__ = "looking_for_band"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    talent = Column(String, nullable=False)
+
+class LookingForMember(Base):
+    __tablename__ = "looking_for_member"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    band_id = Column(Integer, ForeignKey("band.id"), nullable=False)
+    talent = Column(String, nullable=False)

@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import exc
 from sqlalchemy.orm import sessionmaker
 
-import main
+#import main
 from auth.jwt_handler import sign_jwt
 from base_models.band_models import PostBandRequest
 from database_models.models import User, EmailVerification, Base, Band, BandMember, BandInvite

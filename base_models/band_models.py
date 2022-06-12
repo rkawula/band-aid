@@ -23,10 +23,15 @@ class PostSendInvite(BaseModel):
 class PostAcceptInvite(BaseModel):
     code: str
 
-class PostUserLogin(BaseModel):
+class GetUserLogin(BaseModel):
     email: str
     password: str
 
 class JwtUser(BaseModel):
     user_id: int | None=None
     email: str | None = None
+
+class GetSearchRequest(BaseModel):
+    name: str | None
+    location: str | None
+    talent: str | None

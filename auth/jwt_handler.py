@@ -9,10 +9,10 @@ JWT_SECRET = config("jwt_secret")
 JWT_ALGORITHM = config("jwt_algorithm")
 
 
-def generate_token(token: str):
-    return {
-        "access token": token
-    }
+# def generate_token(token: str):
+#     return {
+#         "access_token": token
+#     }
 
 
 def sign_jwt(user: User):

@@ -2,6 +2,7 @@ import logging.config
 import string
 import time
 import uvicorn
+import googlemaps
 from fastapi import FastAPI, Depends, HTTPException, Request
 from database_models.db_connector import get_database
 from sqlalchemy.orm import Session
@@ -11,8 +12,8 @@ from base_models.band_models import (
     PostUserRequest,
     PostBandRequest,
     PostSendInvite,
-    PostAcceptInvite, PostUserLogin,
-    JwtUser
+    PostAcceptInvite, GetUserLogin,
+    JwtUser, GetSearchRequest
 )
 from database_models.db_connector import engine, DbSession
 from database_models.models import (
@@ -28,11 +29,28 @@ from auth.jwt_bearer import JwtBearer
 from sqlalchemy.orm import exc
 from security.security import hash_password, verify_password
 import random
-
+from fastapi.middleware.cors import CORSMiddleware
+from decouple import config
+GEOCODE_API_KEY = config("geocode_api_key")
 # TODO make this work
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+origins = [
+    "http://localhost:8000",
+    "http://localhost:3000"
+]
+app.add_middleware(CORSMiddleware,
+                   allow_origins=origins,
+                   allow_credentials=True,
+                   allow_methods=["*"],
+                   allow_headers=["*"])
+
+def location_to_coords(location:str):
+    geocode_api = googlemaps.Client(key=GEOCODE_API_KEY)
+    result = geocode_api.geocode(location)
+    return result[0]['geometry']['location']
 
 def generate_code():
     chars = string.ascii_letters + string.digits
@@ -53,7 +71,7 @@ def get_current_user(token: str = Depends(JwtBearer())):
 def get_current_user_partially_protected(request: Request):
     def has_auth_header():
         try:
-            a:str=request.headers["authorization"]
+            a: str = request.headers["authorization"]
             return a[7:]
         except:
             return None
@@ -111,10 +129,9 @@ async def post_create_band(post_band_request: PostBandRequest, user: JwtUser = D
 
 @app.get("/verify_band_code/{band_id}/{invite_code}")
 async def verify_band_code(band_id: int, invite_code: str, db: Session = Depends(get_database),
-                           user:JwtUser = Depends(get_current_user_partially_protected)):
-
+                           user: JwtUser = Depends(get_current_user_partially_protected)):
     # user: JwtUser = get_current_user(False)
-    band_invite = db.query(BandInvite).where(BandInvite.band_id == band_id).\
+    band_invite = db.query(BandInvite).where(BandInvite.band_id == band_id). \
         where(BandInvite.code == invite_code).first()
 
     if band_invite is None:
@@ -124,22 +141,24 @@ async def verify_band_code(band_id: int, invite_code: str, db: Session = Depends
         raise HTTPException(status_code=400, detail="Expired invite")
 
     if user is not None:
-        #band_invite meant for some user that is not the current user
+        # band_invite meant for some user that is not the current user
         if band_invite.user_id is not None and band_invite.user_id != user.user_id:
             raise HTTPException(status_code=403, detail="Invalid invite")
-        #logged in and invite is meant for no userID then allow it
+        # logged in and invite is meant for no userID then allow it
         if band_invite.user_id is None:
             return {"Success"}
         return
     else:
-        #Not logged in and invite is for no user id then allow it
+        # Not logged in and invite is for no user id then allow it
         if band_invite.user_id is None:
             return {"Success"}
         else:
             raise HTTPException(status_code=403, detail="Invalid invite")
+    return {"Success"}
 
-    return
-
+@app.get("/test/{location}",tags=['test'])
+async def geotest(location:str):
+    return location_to_coords(location)
 
 @app.post("/register")
 async def register_user(user_request: PostUserRequest, db: Session = Depends(get_database)):
@@ -148,12 +167,18 @@ async def register_user(user_request: PostUserRequest, db: Session = Depends(get
     if dup:
         raise HTTPException(status_code=400, detail="Email already exists")
 
+    if user_request.location is not None:
+        lng_lat = location_to_coords(user_request.location)
+
     user = User(
         first_name=user_request.first_name,
         last_name=user_request.last_name,
         email=user_request.email,
         password_hash=hash_password(user_request.password),
-        location=user_request.location
+        location=user_request.location,
+        longitude=lng_lat.lng if lng_lat else None,
+        latitude=lng_lat.lat if lng_lat else None
+
     )
 
     try:
@@ -169,6 +194,7 @@ async def register_user(user_request: PostUserRequest, db: Session = Depends(get
         db.rollback()
         raise HTTPException(status_code=500, detail="Could not create user entry")
     db.commit()
+
 
     # TODO get new app password for gmail
     # mail = Email()
@@ -194,9 +220,9 @@ async def get_user(id: int, db: Session = Depends(get_database)):
     return user
 
 
-
 @app.put("/update_user")
-async def update_user(user_request: PostUserRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+async def update_user(user_request: PostUserRequest, db: Session = Depends(get_database),
+                      user: JwtUser = Depends(get_current_user)):
     try:
         dbuser = db.query(User).where(User.id == user.user_id).first()
         dbuser.first_name = user_request.first_name
@@ -204,7 +230,11 @@ async def update_user(user_request: PostUserRequest, db: Session = Depends(get_d
         dbuser.email = user_request.email
         if user_request.password:
             dbuser.password_hash = hash_password(user_request.password)
-        dbuser.location = user_request.location
+        if dbuser.location != user_request.location:
+            dbuser.location = user_request.location
+            lng_lat = location_to_coords(user_request.location)
+            dbuser.longitude = lng_lat.lng
+            dbuser.latitude = lng_lat.lat
         db.commit()
 
         # TODO To revoke tokens, add date column to user for rejecting tokens given before x date
@@ -218,15 +248,23 @@ async def update_user(user_request: PostUserRequest, db: Session = Depends(get_d
 
 
 @app.put("/update_band")
-async def update_band(band_request: PostBandRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+async def update_band(band_request: PostBandRequest, db: Session = Depends(get_database),
+                      user: JwtUser = Depends(get_current_user)):
     try:
-        bm = db.query(BandMember).where(BandMember.band_id == band_request.id).where(BandMember.user_id == user.user_id).first()
+        bm = db.query(BandMember).where(BandMember.band_id == band_request.id).where(
+            BandMember.user_id == user.user_id).first()
         if not bm.admin:
             raise HTTPException(status_code=400, detail="Not and admin")
         band = db.query(Band).where(Band.id == band_request.id).first()
 
         band.name = band_request.name
-        band.location = band_request.location
+
+        if band.location != band_request.location:
+            band.location = band_request.location
+            lng_lat = location_to_coords(band.location)
+            band.longitude = lng_lat.lng
+            band.latitude = lng_lat.lat
+
         db.commit()
     except exc.sa_exc.SQLAlchemyError as err:
         raise HTTPException(status_code=500, detail="Could not update band")
@@ -234,14 +272,17 @@ async def update_band(band_request: PostBandRequest, db: Session = Depends(get_d
 
 
 @app.delete("/delete_band")
-async def delete_band(band_request: PostBandRequest, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+async def delete_band(band_request: PostBandRequest, db: Session = Depends(get_database),
+                      user: JwtUser = Depends(get_current_user)):
     try:
-        bm = db.query(BandMember).where(BandMember.band_id == band_request.id).where(BandMember.user_id == user.user_id).first()
+        bm = db.query(BandMember).where(BandMember.band_id == band_request.id).where(
+            BandMember.user_id == user.user_id).first()
         if not bm.admin:
             raise HTTPException(status_code=400, detail="Not and admin")
         band = db.query(Band).where(Band.id == band_request.id).first()
 
-        db.delete(BandMember).where(BandMember.user_id.in_(db.query(BandMember.user_id).where(BandMember.band_id == band_request.id)))
+        db.delete(BandMember).where(
+            BandMember.user_id.in_(db.query(BandMember.user_id).where(BandMember.band_id == band_request.id)))
         db.delete(band)
         db.commit()
     except exc.sa_exc.SQLAlchemyError:
@@ -266,9 +307,11 @@ async def verify_user_email(code: str, db: Session = Depends(get_database)):
 
 
 @app.post("/accept_invite")
-async def accept_invite(pai: PostAcceptInvite, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+async def accept_invite(pai: PostAcceptInvite, db: Session = Depends(get_database),
+                        user: JwtUser = Depends(get_current_user)):
     try:
-        invite = db.query(BandInvite).where(BandInvite.code == pai.code).where(user.user_id == BandInvite.user_id).first()
+        invite = db.query(BandInvite).where(BandInvite.code == pai.code).where(
+            user.user_id == BandInvite.user_id).first()
         if invite:
             bm = BandMember(band_id=invite.band_id, user_id=user.user_id, admin=False)
             db.add(bm)
@@ -282,9 +325,11 @@ async def accept_invite(pai: PostAcceptInvite, db: Session = Depends(get_databas
 
 
 @app.post("/decline_invite")
-async def decline_invite(pai: PostAcceptInvite, db: Session = Depends(get_database),user: JwtUser = Depends(get_current_user)):
+async def decline_invite(pai: PostAcceptInvite, db: Session = Depends(get_database),
+                         user: JwtUser = Depends(get_current_user)):
     try:
-        invite = db.query(BandInvite).where(BandInvite.code == pai.code).where(user.user_id == BandInvite.user_id).first()
+        invite = db.query(BandInvite).where(BandInvite.code == pai.code).where(
+            user.user_id == BandInvite.user_id).first()
         if invite:
             db.delete(invite)
             db.commit()
@@ -296,7 +341,8 @@ async def decline_invite(pai: PostAcceptInvite, db: Session = Depends(get_databa
 
 
 @app.post("/send_invite")
-async def send_invite(psi: PostSendInvite, db: Session = Depends(get_database), user: JwtUser = Depends(get_current_user())):
+async def send_invite(psi: PostSendInvite, db: Session = Depends(get_database),
+                      user: JwtUser = Depends(get_current_user())):
     try:
         band_member = db.query(BandMember).where(BandMember.user_id == user.user_id). \
             where(BandMember.band_id == psi.band_id).first()
@@ -316,15 +362,15 @@ async def send_invite(psi: PostSendInvite, db: Session = Depends(get_database), 
 
 
 @app.post("/login")
-async def user_login(pul: PostUserLogin, db: Session = Depends(get_database)):
-    user = db.query(User).where(User.email == pul.email).first()
-    if verify_password(pul.password, user.password_hash):
+async def user_login(gul: GetUserLogin, db: Session = Depends(get_database)):
+    user = db.query(User).where(User.email == gul.email).first()
+    if user and verify_password(gul.password, user.password_hash):
         return sign_jwt(user)
     raise HTTPException(status_code=400, detail="Email/Password does not exist")
 
 
 @app.put("/read_notification/{id}")
-async def read_notification(id:int, db: Session = Depends(get_database), user: JwtUser = Depends(get_current_user())):
+async def read_notification(id: int, db: Session = Depends(get_database), user: JwtUser = Depends(get_current_user)):
     notif: Notification = db.query(Notification).where(Notification.id == id).first()
     if notif is None:
         raise HTTPException(status_code=404, detail="Notification does not exist")
@@ -333,6 +379,7 @@ async def read_notification(id:int, db: Session = Depends(get_database), user: J
     notif.read = True
     db.commit()
     return {"Success"}
+
 
 # =====TESTING =====
 @app.get("/users", tags=['test'])
@@ -386,10 +433,12 @@ def populate_db():
 
     db.add_all([user1, user2, user3, user1_band])
     db.flush()
-    bm = BandMember(band_id=user1_band.id,user_id=user1.id,admin=True)
+    bm = BandMember(band_id=user1_band.id, user_id=user1.id, admin=True)
     bm2 = BandMember(band_id=user1_band.id, user_id=user2.id, admin=False)
     db.add_all([bm, bm2])
     db.commit()
+
+
 # =====TESTING =====
 
 
