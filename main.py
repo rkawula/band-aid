@@ -22,7 +22,7 @@ from database_models.models import (
     BandMember,
     BandInvite,
     EmailVerification,
-    Band, Notification
+    Band, Notification, LookingForMember, LookingForBand, LocationCache
 )
 from auth.jwt_handler import sign_jwt, decode_jwt
 from auth.jwt_bearer import JwtBearer
@@ -31,6 +31,7 @@ from security.security import hash_password, verify_password
 import random
 from fastapi.middleware.cors import CORSMiddleware
 from decouple import config
+
 GEOCODE_API_KEY = config("geocode_api_key")
 # TODO make this work
 logger = logging.getLogger(__name__)
@@ -47,10 +48,19 @@ app.add_middleware(CORSMiddleware,
                    allow_methods=["*"],
                    allow_headers=["*"])
 
-def location_to_coords(location:str):
+
+def location_to_coords(location: str, db):
+    # TODO Check with stored cache before going to google
+    dup = db.query(LocationCache).where(LocationCache.location == location.lower()).first()
+    if dup:
+        return {"lng":dup.lng,"lat":dup.lat}
+
     geocode_api = googlemaps.Client(key=GEOCODE_API_KEY)
     result = geocode_api.geocode(location)
+    if result:
+        db.add(LocationCache(lng=result['lng'], lat=result['lat'], location=location))
     return result[0]['geometry']['location']
+
 
 def generate_code():
     chars = string.ascii_letters + string.digits
@@ -156,9 +166,11 @@ async def verify_band_code(band_id: int, invite_code: str, db: Session = Depends
             raise HTTPException(status_code=403, detail="Invalid invite")
     return {"Success"}
 
-@app.get("/test/{location}",tags=['test'])
-async def geotest(location:str):
+
+@app.get("/test/{location}", tags=['test'])
+async def geotest(location: str):
     return location_to_coords(location)
+
 
 @app.post("/register")
 async def register_user(user_request: PostUserRequest, db: Session = Depends(get_database)):
@@ -167,8 +179,9 @@ async def register_user(user_request: PostUserRequest, db: Session = Depends(get
     if dup:
         raise HTTPException(status_code=400, detail="Email already exists")
 
+    lng_lat = None
     if user_request.location is not None:
-        lng_lat = location_to_coords(user_request.location)
+        lng_lat = location_to_coords(user_request.location,db)
 
     user = User(
         first_name=user_request.first_name,
@@ -194,7 +207,6 @@ async def register_user(user_request: PostUserRequest, db: Session = Depends(get
         db.rollback()
         raise HTTPException(status_code=500, detail="Could not create user entry")
     db.commit()
-
 
     # TODO get new app password for gmail
     # mail = Email()
@@ -230,9 +242,9 @@ async def update_user(user_request: PostUserRequest, db: Session = Depends(get_d
         dbuser.email = user_request.email
         if user_request.password:
             dbuser.password_hash = hash_password(user_request.password)
-        if dbuser.location != user_request.location:
+        if user_request.location and dbuser.location != user_request.location:
             dbuser.location = user_request.location
-            lng_lat = location_to_coords(user_request.location)
+            lng_lat = location_to_coords(user_request.location,db)
             dbuser.longitude = lng_lat.lng
             dbuser.latitude = lng_lat.lat
         db.commit()
@@ -261,7 +273,7 @@ async def update_band(band_request: PostBandRequest, db: Session = Depends(get_d
 
         if band.location != band_request.location:
             band.location = band_request.location
-            lng_lat = location_to_coords(band.location)
+            lng_lat = location_to_coords(band.location,db)
             band.longitude = lng_lat.lng
             band.latitude = lng_lat.lat
 
@@ -381,6 +393,35 @@ async def read_notification(id: int, db: Session = Depends(get_database), user: 
     return {"Success"}
 
 
+def get_range_coordinates(lat, lng, range):
+    lat_offset = range / 69
+    lng_offset = range / 52
+    return (lat - lat_offset, lat + lat_offset), (lng - lng_offset, lng + lng_offset)
+
+
+@app.get("/search")
+async def search(location: str, type: str, distance: int, roles, db: Session = Depends(get_database)):
+    loc = location_to_coords(location,db)
+    coord_range = get_range_coordinates(loc['lat'], loc['lng'], distance)
+    arr_roles = roles.split(",")
+    lat_range = coord_range[0]
+    lng_range = coord_range[1]
+    if type == "Band":
+        # TODO FIX THESE QUERIES
+        res = db.query(Band).where(
+            Band.id.in_(db.query(LookingForMember.band_id).where(LookingForMember.talent.in_(arr_roles)))).\
+            where(lat_range[0] < Band.latitude, Band.latitude < lat_range[1],
+                  lng_range[0] < Band.longitude, Band.longitude < lng_range[1]).all()
+    elif type == "Member":
+        res = db.query(User).where(
+            User.id.in_(db.query(LookingForBand.band_id).where(LookingForBand.talent.in_(arr_roles)))).\
+            where(lat_range[0] < User.latitude, User.latitude < lat_range[1],
+                  lng_range[0] < User.longitude, User.longitude < lng_range[1]).all()
+    else:
+        raise HTTPException(status_code=400, detail="Bruh, that's not a type")
+    return res
+
+
 # =====TESTING =====
 @app.get("/users", tags=['test'])
 async def print_users(db: Session = Depends(get_database)):
@@ -405,6 +446,16 @@ async def print_verifications(db: Session = Depends(get_database)):
     results = db.query(EmailVerification).all()
     return results
 
+@app.get("/lfms", tags=['test'])
+async def print_looking_for_members(db: Session = Depends(get_database)):
+    results = db.query(LookingForMember).all()
+    return results
+
+@app.get("/lfbs", tags=['test'])
+async def print_looking_for_bands(db: Session = Depends(get_database)):
+    results = db.query(LookingForBand).all()
+    return results
+
 
 def populate_db():
     db = next(get_database())
@@ -427,15 +478,18 @@ def populate_db():
         last_name="Denathrius",
         email="sire@gmail.com",
         password_hash=hash_password("test"),
-        location="Revendreth"
+        location="Revendreth",
     )
-    user1_band = Band(name="Assassins", location="Spain")
+
+    user1_band = Band(name="Assassins", location="Spain", longitude = -122.4, latitude = 37.8)
 
     db.add_all([user1, user2, user3, user1_band])
     db.flush()
+    band1_lfm = LookingForMember(band_id=user1_band.id, talent="bass")
+    band1_lfm2 = LookingForMember(band_id=user1_band.id, talent="piano")
     bm = BandMember(band_id=user1_band.id, user_id=user1.id, admin=True)
     bm2 = BandMember(band_id=user1_band.id, user_id=user2.id, admin=False)
-    db.add_all([bm, bm2])
+    db.add_all([bm, bm2, band1_lfm, band1_lfm2])
     db.commit()
 
 

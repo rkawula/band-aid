@@ -35,3 +35,5 @@ class GetSearchRequest(BaseModel):
     name: str | None
     location: str | None
     talent: str | None
+
+

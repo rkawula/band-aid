@@ -74,3 +74,11 @@ class LookingForMember(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     band_id = Column(Integer, ForeignKey("band.id"), nullable=False)
     talent = Column(String, nullable=False)
+
+
+class LocationCache(Base):
+    __tablename__ = "location_cache"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    lng = Column(Float, nullable=False)
+    lat = Column(Float, nullable=False)
+    location = Column(String, nullable=False)
