@@ -27,12 +27,12 @@ from database_models.models import (
 from auth.jwt_handler import sign_jwt, decode_jwt
 from auth.jwt_bearer import JwtBearer
 from sqlalchemy.orm import exc
-from security.security import hash_password, verify_password
+from security.password_security import hash_password, verify_password
 import random
 from fastapi.middleware.cors import CORSMiddleware
 from decouple import config
 
-GEOCODE_API_KEY = config("geocode_api_key")
+GEOCODE_API_KEY = config("GEOCODE_API_KEY")
 # TODO make this work
 logger = logging.getLogger(__name__)
 
@@ -295,6 +295,7 @@ async def delete_band(band_request: PostBandRequest, db: Session = Depends(get_d
 
         db.delete(BandMember).where(
             BandMember.user_id.in_(db.query(BandMember.user_id).where(BandMember.band_id == band_request.id)))
+        db.delete(LookingForMember).where(LookingForMember.band_id == band_request.id)
         db.delete(band)
         db.commit()
     except exc.sa_exc.SQLAlchemyError:
@@ -386,7 +387,7 @@ async def read_notification(id: int, db: Session = Depends(get_database), user: 
     notif: Notification = db.query(Notification).where(Notification.id == id).first()
     if notif is None:
         raise HTTPException(status_code=404, detail="Notification does not exist")
-    if notif.to_user_id != user.user_id:
+    if notif.recipient_user_id != user.user_id:
         raise HTTPException(status_code=401, detail="That is not your message, but you already know this")
     notif.read = True
     db.commit()

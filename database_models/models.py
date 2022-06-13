@@ -44,6 +44,7 @@ class BandInvite(Base):
     band_id = Column(Integer, ForeignKey("band.id"), primary_key=True)
     user_id = Column(Integer, ForeignKey("user.id"), primary_key=True, nullable=True)
     code = Column(String(8), primary_key=True)
+    # 30 days
     expiration = Column(BigInteger, default=func.now()+30*24*60*60)
 
 
@@ -56,7 +57,7 @@ class NotificationType(enum.Enum):
 class Notification(Base):
     __tablename__ = "notification"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    to_user_id = Column(Integer, ForeignKey("user.id"), nullable=True)
+    recipient_user_id = Column(Integer, ForeignKey("user.id"), nullable=True)
     message = Column(String, nullable=False)
     read = Column(Boolean, nullable=False, default=False)
     sent = Column(Boolean, nullable=False)

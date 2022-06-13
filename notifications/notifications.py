@@ -6,4 +6,6 @@ class Notification:
         self.message = message
 
     def send(self):
+        # TODO Implement
+        raise NotImplementedError
         pass
