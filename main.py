@@ -13,7 +13,7 @@ from base_models.band_models import (
     PostBandRequest,
     PostSendInvite,
     PostAcceptInvite, GetUserLogin,
-    JwtUser, GetSearchRequest
+    JwtUser
 )
 from database_models.db_connector import engine, DbSession
 from database_models.models import (
@@ -22,7 +22,7 @@ from database_models.models import (
     BandMember,
     BandInvite,
     EmailVerification,
-    Band, Notification, LookingForMember, LookingForBand, LocationCache
+    Band, Notification, LookingForMember, LookingForBand, LocationCache, BandInviteByEmail
 )
 from auth.jwt_handler import sign_jwt, decode_jwt
 from auth.jwt_bearer import JwtBearer
@@ -48,6 +48,7 @@ app.add_middleware(CORSMiddleware,
                    allow_methods=["*"],
                    allow_headers=["*"])
 
+THIRTY_DAYS_IN_SECONDS = 30 * 24 * 60 * 60
 
 def location_to_coords(location: str, db):
     # TODO Check with stored cache before going to google
@@ -57,9 +58,10 @@ def location_to_coords(location: str, db):
 
     geocode_api = googlemaps.Client(key=GEOCODE_API_KEY)
     result = geocode_api.geocode(location)
+    coordinates = result[0]['geometry']['location']
     if result:
-        db.add(LocationCache(lng=result['lng'], lat=result['lat'], location=location))
-    return result[0]['geometry']['location']
+        db.add(LocationCache(lng=coordinates['lng'], lat=coordinates['lat'], location=location))
+    return coordinates
 
 
 def generate_code():
@@ -164,7 +166,6 @@ async def verify_band_code(band_id: int, invite_code: str, db: Session = Depends
             return {"Success"}
         else:
             raise HTTPException(status_code=403, detail="Invalid invite")
-    return {"Success"}
 
 
 @app.get("/test/{location}", tags=['test'])
@@ -178,7 +179,6 @@ async def register_user(user_request: PostUserRequest, db: Session = Depends(get
     dup = db.query(User).where(User.email == user_request.email).first()
     if dup:
         raise HTTPException(status_code=400, detail="Email already exists")
-
     lng_lat = None
     if user_request.location is not None:
         lng_lat = location_to_coords(user_request.location,db)
@@ -189,8 +189,8 @@ async def register_user(user_request: PostUserRequest, db: Session = Depends(get
         email=user_request.email,
         password_hash=hash_password(user_request.password),
         location=user_request.location,
-        longitude=lng_lat.lng if lng_lat else None,
-        latitude=lng_lat.lat if lng_lat else None
+        longitude=lng_lat['lng'] if lng_lat else None,
+        latitude=lng_lat['lat'] if lng_lat else None
 
     )
 
@@ -200,12 +200,24 @@ async def register_user(user_request: PostUserRequest, db: Session = Depends(get
             code = generate_code()
             ev = EmailVerification(user_id=user.id, code=code)
             add_and_flush(db, ev)
+            try:
+                band_invites = db.query(BandInviteByEmail).where(BandInviteByEmail.email == user.email,
+                                                                 time.time() < BandInviteByEmail.expiration).all()
+                if band_invites:
+                    for invite in band_invites:
+                        db.add(BandMember(user_id=user.id, band_id=invite.band_id))
+                    db.delete(BandInviteByEmail).where(BandInviteByEmail.email == user.email)
+            except exc.sa_exc.SQLAlchemyError as err:
+                raise HTTPException(status_code=500, detail="Inviting to band error")
+                db.rollback()
         except exc.sa_exc.SQLAlchemyError as err:
             db.rollback()
             raise HTTPException(status_code=500, detail="Could not create verification code entry")
     except exc.sa_exc.SQLAlchemyError as err:
         db.rollback()
         raise HTTPException(status_code=500, detail="Could not create user entry")
+
+
     db.commit()
 
     # TODO get new app password for gmail
@@ -231,6 +243,20 @@ async def get_user(id: int, db: Session = Depends(get_database)):
         raise HTTPException(status_code=500, detail="Could not get user")
     return user
 
+@app.delete("/user/")
+async def delete_user(db: Session = Depends(get_database),
+                      user: JwtUser = Depends(get_current_user)):
+    try:
+        db.delete(BandInvite).where(BandInvite.user_id == user.user_id)
+        db.delete(Notification).where(Notification.recipient_user_id == user.user_id)
+        db.delete(BandMember).where(BandMember.user_id== user.user_id)
+        db.delete(LookingForBand).where(LookingForBand.user_id == user.user_id)
+        db.delete(User).where(User.id == user.user_id)
+    except exc.sa_exc.SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not get user")
+    db.commit()
+    return {"Success"}
 
 @app.put("/update_user")
 async def update_user(user_request: PostUserRequest, db: Session = Depends(get_database),
@@ -408,7 +434,6 @@ async def search(location: str, type: str, distance: int, roles, db: Session = D
     lat_range = coord_range[0]
     lng_range = coord_range[1]
     if type == "Band":
-        # TODO FIX THESE QUERIES
         res = db.query(Band).where(
             Band.id.in_(db.query(LookingForMember.band_id).where(LookingForMember.talent.in_(arr_roles)))).\
             where(lat_range[0] < Band.latitude, Band.latitude < lat_range[1],
@@ -457,6 +482,11 @@ async def print_looking_for_bands(db: Session = Depends(get_database)):
     results = db.query(LookingForBand).all()
     return results
 
+@app.get("/bibe", tags=['test'])
+async def print_band_invite_by_email(db: Session = Depends(get_database)):
+    results = db.query(BandInviteByEmail).all()
+    return results
+
 
 def populate_db():
     db = next(get_database())
@@ -490,7 +520,8 @@ def populate_db():
     band1_lfm2 = LookingForMember(band_id=user1_band.id, talent="piano")
     bm = BandMember(band_id=user1_band.id, user_id=user1.id, admin=True)
     bm2 = BandMember(band_id=user1_band.id, user_id=user2.id, admin=False)
-    db.add_all([bm, bm2, band1_lfm, band1_lfm2])
+    bibe = BandInviteByEmail(email="invite@gmail.com", band_id=user1_band.id, expiration=time.time() + THIRTY_DAYS_IN_SECONDS)
+    db.add_all([bm, bm2, band1_lfm, band1_lfm2,bibe])
     db.commit()
 
 

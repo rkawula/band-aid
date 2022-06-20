@@ -83,3 +83,10 @@ class LocationCache(Base):
     lng = Column(Float, nullable=False)
     lat = Column(Float, nullable=False)
     location = Column(String, nullable=False)
+
+class BandInviteByEmail(Base):
+    __tablename__ = "band_invite_by_email"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String, nullable=False)
+    band_id = Column(Integer, ForeignKey("band.id"), nullable=False)
+    expiration = Column(BigInteger)

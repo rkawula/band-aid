@@ -36,9 +36,3 @@ class GetUserLogin(BaseModel):
 class JwtUser(BaseModel):
     user_id: int | None = None
     email: str | None = None
-
-
-class GetSearchRequest(BaseModel):
-    name: str | None
-    location: str | None
-    talent: str | None
