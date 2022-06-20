@@ -1,0 +1,5 @@
+.idea
+__pycache__
+.env
+database.db
+tests/test_database.db
