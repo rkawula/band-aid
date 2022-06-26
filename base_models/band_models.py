@@ -36,3 +36,8 @@ class GetUserLogin(BaseModel):
 class JwtUser(BaseModel):
     user_id: int | None = None
     email: str | None = None
+
+
+class Message(BaseModel):
+    recipient_user_id: int
+    message: str
