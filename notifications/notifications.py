@@ -1,11 +1,14 @@
+from database_models.models import DBNotification, NotificationPriority
+from database_models.db_connector import get_database
+
 
 class Notification:
 
-    def __intit__(self, to, message):
-        self.to = to
-        self.message = message
+    def __init__(self):
+        self.db = get_database()
 
-    def send(self):
-        # TODO Implement
-        raise NotImplementedError
-        pass
+    def send(self, recipient_id, message, expiration, priority=NotificationPriority.normal):
+        notification = DBNotification(recipient_user_id=recipient_id, message=message, priority=priority,
+                                      expiration=expiration)
+        self.db.add(notification)
+        self.db.commit()
