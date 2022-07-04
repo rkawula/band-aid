@@ -1,4 +1,6 @@
 import enum
+import json
+
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, String, Integer, Boolean, Float, ForeignKey, BigInteger, DateTime, func, Enum
 
@@ -13,6 +15,7 @@ class Band(Base):
     longitude = Column(Float)
     latitude = Column(Float)
 
+
 class User(Base):
     __tablename__ = 'user'
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -23,7 +26,8 @@ class User(Base):
     location = Column(String)
     longitude = Column(Float)
     latitude = Column(Float)
-    email_verified = Column(Boolean,default=False)
+    email_verified = Column(Boolean, default=False)
+    email_notifications_opt_in = Column(Boolean, default=False)
 
 
 class EmailVerification(Base):
@@ -48,20 +52,20 @@ class BandInvite(Base):
     expiration = Column(BigInteger, default=func.now()+30*24*60*60)
 
 
-class NotificationType(enum.Enum):
+class NotificationPriority(enum.Enum):
     high = 3
     normal = 2
     low = 1
 
 
-class Notification(Base):
+class DBNotification(Base):
     __tablename__ = "notification"
     id = Column(Integer, primary_key=True, autoincrement=True)
     recipient_user_id = Column(Integer, ForeignKey("user.id"), nullable=True)
     message = Column(String, nullable=False)
     read = Column(Boolean, nullable=False, default=False)
-    sent = Column(Boolean, nullable=False)
-    type = Column(Enum(NotificationType), nullable=False)
+    date_sent = Column(BigInteger, nullable=False)
+    priority = Column(Enum(NotificationPriority), nullable=False)
     expiration = Column(BigInteger)
 
 class LookingForBand(Base):
@@ -90,3 +94,22 @@ class BandInviteByEmail(Base):
     email = Column(String, nullable=False)
     band_id = Column(Integer, ForeignKey("band.id"), nullable=False)
     expiration = Column(BigInteger)
+
+
+class DBMessage(Base):
+    __tablename__ = "message"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sender_user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    recipient_user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    message = Column(String, nullable=False)
+    sent = Column(BigInteger, nullable=False, default=func.now())
+    read = Column(BigInteger, nullable=False, default=False)
+
+    def json(self):
+        return {
+            "sender_user_id": self.sender_user_id,
+            "recipient_user_id": self.recipient_user_id,
+            "message": self.message,
+            "date_sent": self.sent,
+            "read": self.read
+        }

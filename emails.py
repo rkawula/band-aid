@@ -2,6 +2,8 @@ import smtplib
 from email.message import EmailMessage
 from decouple import config
 
+from database_models.models import User
+
 
 class Email:
     def __init__(self):
@@ -36,3 +38,7 @@ class Email:
         subject = "Welcome"
         message = "Click on the following link to activate your account. " + url
         self.send_email(email, subject, message)
+
+    def send_notification_email(self, user_id, subject, message):
+        user = User.query.get(user_id)
+        self.send_email(user.email, subject, message)
