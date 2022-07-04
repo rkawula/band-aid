@@ -4,6 +4,7 @@ from database_models.models import User
 from jwt.exceptions import DecodeError
 from decouple import config
 
+
 JWT_SECRET = config("JWT_SECRET")
 JWT_ALGORITHM = config("JWT_ALGORITHM")
 
@@ -12,7 +13,7 @@ def sign_jwt(user: User):
     payload = {
         "user_id": user.id,
         # 30 days
-        "expiration": time.time() + 30 * 24 * 60 * 60 * 1000
+        "expiration": time.time() + 30 * 24 * 60 * 60
     }
     token = jwt.encode(payload, JWT_SECRET)
     return token

@@ -1,20 +1,27 @@
 import json
 import time
+import main
 import pytest
-
-from unittest.mock import patch
+import asyncio
+from starlette.websockets import WebSocket
+from unittest import mock
+from unittest.mock import patch, MagicMock, Mock
 from fastapi.testclient import TestClient
+from pytest_mock import mocker
 from sqlalchemy import create_engine
-from sqlalchemy.orm import exc
+from sqlalchemy.orm import exc, Session
 from sqlalchemy.orm import sessionmaker
-from auth.jwt_handler import sign_jwt
-from database_models.models import User, EmailVerification, Base, Band, BandMember, BandInvite
+from websockets.exceptions import ConnectionClosed
+
+from auth.jwt_handler import sign_jwt, decode_jwt
+from database_models.models import User, EmailVerification, Base, Band, BandMember, BandInvite, DBMessage, \
+    LookingForMember, Notification, NotificationType
 from main import get_database, app
 from security.password_security import hash_password
 
 DATABASE_URL = "sqlite:///./test_database.db"
 engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
+    DATABASE_URL, connect_args={"check_same_thread": False}, echo=True
 )
 
 Base.metadata.drop_all(bind=engine)
@@ -51,74 +58,71 @@ invalid_data = {
 def test_valid_register_user():
     resp = client.post("/register", json=valid_data)
     assert resp.status_code == 200
+    user = decode_jwt(resp.content.decode().replace("\"", ""))
     db = next(override_get_db())
-    assert len(db.query(EmailVerification).all()) == 1
-    assert len(db.query(User).all()) == 4
-    # TODO assert returned jwt is valid for given user
-
-
-def test_duplicate_email_register_user():
-    resp = client.post("/register", json=valid_data)
-    assert resp.status_code == 400
-    db = next(override_get_db())
-    assert len(db.query(EmailVerification).all()) == 1
-    assert len(db.query(User).all()) == 4
-
-
-def test_invalid_data_register_user():
-    resp = client.post("/register", json=invalid_data)
-    assert resp.status_code == 422
-    db = next(override_get_db())
-    assert len(db.query(EmailVerification).all()) == 1
-    assert len(db.query(User).all()) == 4
-
-
-def test_bad_db_register_user():
-    with patch("main.add_and_flush") as add_mock:
-        add_mock.side_effect = exc.sa_exc.SQLAlchemyError()
-        valid_data["email"] = "newemail@gmail.com"
-        resp = client.post("/register", json=valid_data)
-        assert resp.status_code == 500
-        db = next(override_get_db())
-        assert len(db.query(EmailVerification).all()) == 1
-        assert len(db.query(User).all()) == 4
-
+    assert len(db.query(EmailVerification).where(EmailVerification.user_id == user['user_id']).all()) == 1
+    assert len(db.query(User).where(User.id == user['user_id']).all()) == 1
 
 @pytest.fixture(scope="session", autouse=True)
 def populate_db():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     db = next(override_get_db())
-    user1 = User(
-        first_name="Jason",
-        last_name="Bourne",
-        email="jason@gmail.com",
-        password_hash=hash_password("test"),
-        location="CA"
-    )
-    user2 = User(
-        first_name="Dexter",
-        last_name="Morgan",
-        email="dexter@gmail.com",
-        password_hash=hash_password("test"),
-        location="FL"
-    )
-    user3 = User(
-        first_name="Sire",
-        last_name="Denathrius",
-        email="sire@gmail.com",
-        password_hash=hash_password("test"),
-        location="Revendreth"
-    )
+    user1 = create_user("Jason", "Bourne", "jason@gmail.com", "test", "CA", db)
+    user2 = create_user("Dexter", "Morgan", "dexter@gmail.com", "test", "FL", db)
+    user3 = create_user("Sire", "Denathrius", "sire@gmail.com", "test", "Revendreth", db)
+    user4 = create_user("Joe", "Schmo", "joe@gmail.com", "test", "MS", db)
+    user5 = create_user("John", "Doe", "john@gmail.com", "test", "KS", db)
     user1_band = Band(name="Assassins", location="Spain")
-
-    db.add_all([user1, user2, user3, user1_band])
+    user5_band = Band(name="IDK", location="KS")
+    db.add_all([user1_band, user5_band, user4])
     db.flush()
+    user4_band1_invite = BandInvite(band_id=user1_band.id, user_id=user4.id, code="ABCD1234")
+    user4_band5_invite = BandInvite(band_id=user5_band.id, user_id=user4.id, code="ABCD1235")
+    ev = EmailVerification(user_id=user4.id, code="ABCD1234")
     bm = BandMember(band_id=user1_band.id, user_id=user1.id, admin=True)
     bm2 = BandMember(band_id=user1_band.id, user_id=user2.id, admin=False)
-    db.add_all([bm, bm2])
+    bm5 = BandMember(band_id=user5_band.id, user_id=user5.id, admin=True)
+    user5_notification = Notification(recipient_user_id=user5.id, message="You have been invited to join a band!", type=NotificationType.normal, expiration=time.time() + 600)
+    user1_notification = Notification(recipient_user_id=user1.id, message="You have been invited to join a band!",
+                                      type=NotificationType.normal, expiration=time.time() + 600)
+    user1_notification_read = Notification(recipient_user_id=user1.id, message="You have been invited to join a band!",
+                                      type=NotificationType.normal, read=True, expiration=time.time() + 600)
+    band1_lfm = LookingForMember(band_id=user1_band.id, talent="Drums")
+    band2_lfm = LookingForMember(band_id=user5_band.id, talent="Double Guitar")
+    db.add_all([bm, bm2, bm5, band1_lfm, ev,user4_band1_invite, user4_band5_invite,
+                band2_lfm, user5_notification, user1_notification, user1_notification_read])
     db.commit()
-    return [user1, user1_band, bm]
+
+
+def test_duplicate_email_register_user():
+    resp = client.post("/register", json=valid_data)
+    assert resp.status_code == 400
+
+
+def test_invalid_data_register_user():
+    resp = client.post("/register", json=invalid_data)
+    assert resp.status_code == 422
+
+
+def test_bad_db_register_user():
+    with mock.patch.object(Session, "add", side_effect=exc.sa_exc.SQLAlchemyError) as mock_close:
+        valid_data["email"] = "newemail@gmail.com"
+        resp = client.post("/register", json=valid_data)
+        assert resp.status_code == 500
+
+
+def create_user(f, l, e, p, loc, db):
+    user = User(
+        first_name=f,
+        last_name=l,
+        email=e,
+        password_hash=hash_password(p),
+        location=loc
+    )
+    db.add(user)
+    db.flush()
+    return user
 
 
 def test_get_band():
@@ -131,10 +135,9 @@ def test_get_band():
 
 
 def test_get_band_members():
-    resp = client.get("/bandmembers/1")
-    db = next(override_get_db())
-    bm = db.query(BandMember).where(BandMember.band_id == 1).all()
-    assert len(bm) == 2
+    resp = client.get("/bandmembers/2")
+    data = json.loads(resp.content)
+    assert len(data) == 1
 
 
 def test_create_band():
@@ -215,9 +218,7 @@ def test_verify_band_code_no_user_and_no_user_is_req():
 
 def test_verify_band_code_has_user_and_no_user_req():
     db = next(override_get_db())
-    header = {
-        "Authorization": "Bearer " + sign_jwt(db.query(User).where(User.id == 1).first())
-    }
+    header = create_auth_header(1)
     band = Band(name="test2", location="home")
     db.add(band)
     db.flush()
@@ -231,9 +232,7 @@ def test_verify_band_code_has_user_and_no_user_req():
 
 def test_verity_band_code_invite_expired():
     db = next(override_get_db())
-    header = {
-        "Authorization": "Bearer " + sign_jwt(db.query(User).where(User.id == 1).first())
-    }
+    header = create_auth_header(1)
     band = Band(name="test2", location="home")
     db.add(band)
     db.flush()
@@ -246,9 +245,7 @@ def test_verity_band_code_invite_expired():
 
 def test_verify_band_code_invalid_band_id():
     db = next(override_get_db())
-    header = {
-        "Authorization": "Bearer " + sign_jwt(db.query(User).where(User.id == 1).first())
-    }
+    header = create_auth_header(1)
     band = Band(name="test2", location="home")
     db.add(band)
     db.flush()
@@ -262,9 +259,7 @@ def test_verify_band_code_invalid_band_id():
 
 def test_verify_band_code_invalid_code():
     db = next(override_get_db())
-    header = {
-        "Authorization": "Bearer " + sign_jwt(db.query(User).where(User.id == 1).first())
-    }
+    header = create_auth_header(1)
     band = Band(name="test2", location="home")
     db.add(band)
     db.flush()
@@ -291,9 +286,7 @@ def test_verify_band_code_no_user_and_user_is_req():
 def test_verify_band_code_has_user_and_different_user_is_req():
     db = next(override_get_db())
     authuser = 1
-    header = {
-        "Authorization": "Bearer " + sign_jwt(db.query(User).where(User.id == authuser).first())
-    }
+    header = create_auth_header(authuser)
     band = Band(name="test2", location="home")
     db.add(band)
     db.flush()
@@ -325,32 +318,240 @@ def test_update_band():
     pass
 
 
-def test_delete_band():
-    # TODO test not admin
+def test_delete_user():
+    # No functional code present
     pass
 
 
-def test_verify_user_email():
-    # TODO test invalid code
-    pass
+def create_auth_header(user_id):
+    db = next(override_get_db())
+    return {
+        "Authorization": "Bearer " + sign_jwt(db.query(User).where(User.id == user_id).first())
+    }
 
 
-def test_accept_invite():
-    # TODO test invalid code
-    pass
+def test_delete_band_not_member():
+    header = create_auth_header(3)
+    band_id = 1
+    resp = client.delete("/delete_band?band_id={0}".format(band_id), headers=header)
+    assert resp.status_code == 400
+    data = json.loads(resp.text)
+    assert data["detail"] == "Not a member"
 
 
-def test_decline_invite():
-    # TODO test invalid code
-    pass
+def test_delete_band_not_admin():
+    header = create_auth_header(2)
+    band_id = 1
+    resp = client.delete("/delete_band?band_id={0}".format(band_id), headers=header)
+    assert resp.status_code == 400
+    data = json.loads(resp.text)
+    assert data["detail"] == "Not an admin"
 
 
-def test_send_invite():
-    # TODO test not admin
-    #      test target already a member
-    pass
+def test_delete_band_success():
+    header = create_auth_header(5)
+    band_id = 2
+    db = next(override_get_db())
+    before_band = db.query(Band).where(Band.id == band_id).all()
+    before_bm = db.query(BandMember).filter(BandMember.band_id == band_id).all()
+    before_lfm = db.query(LookingForMember).where(LookingForMember.band_id == band_id).all()
+    resp = client.delete("/delete_band?band_id={0}".format(band_id), headers=header)
+    after_bm = db.query(BandMember).filter(BandMember.band_id == band_id).all()
+    after_lfm = db.query(LookingForMember).where(LookingForMember.band_id == band_id).all()
+    after_band = db.query(Band).where(Band.id == band_id).all()
+    assert len(before_bm) > 0
+    assert len(after_bm) == 0
+    assert len(before_lfm) > 0
+    assert len(after_lfm) == 0
+    assert len(before_band) > 0
+    assert len(after_band) == 0
+    assert resp.status_code == 200
 
 
-def test_user_login():
+def test_delete_band_band_does_not_exist():
+    header = create_auth_header(2)
+    band_id = 10000
+    resp = client.delete("/delete_band?band_id={0}".format(band_id), headers=header)
+    assert resp.status_code == 400
+    data = json.loads(resp.text)
+    assert data["detail"] == "Not a member"
+
+
+def test_verify_user_email_invalid_code():
+    resp = client.put("/verify_email?code={0}".format("INVALID"))
+    assert resp.status_code == 400
+
+
+def test_verify_user_email_success():
+    resp = client.put("/verify_email?code={0}".format("ABCD1234"))
+    assert resp.status_code == 200
+
+
+def test_accept_invite_success():
+    header = create_auth_header(4)
+    resp = client.post("/accept_invite?code={0}".format("ABCD1234"), headers=header)
+    assert resp.status_code == 200
+
+
+def test_accept_invite_invalid_code():
+    header = create_auth_header(4)
+    resp = client.post("/accept_invite?code={0}".format("INVALID"), headers=header)
+    assert resp.status_code == 400
+
+
+def test_decline_invite_success():
+    header = create_auth_header(4)
+    resp = client.post("/decline_invite?code={0}".format("ABCD1235"), headers=header)
+    assert resp.status_code == 200
+
+
+def test_decline_invite_invalid_code():
+    header = create_auth_header(4)
+    resp = client.post("/decline_invite?code={0}".format("INVALID"), headers=header)
+    assert resp.status_code == 400
+
+
+def test_send_invite_target_already_member():
+    header = create_auth_header(1)
+    resp = client.post("/send_invite?user_id={0}&band_id={1}".format(2, 1), headers=header)
+    assert resp.status_code == 400
+    assert json.loads(resp.text)["detail"] == "Already a member"
+
+
+def test_send_invite_not_admin():
+    header = create_auth_header(2)
+    resp = client.post("/send_invite?user_id={0}&band_id={1}".format(5, 1), headers=header)
+    assert resp.status_code == 400
+    assert json.loads(resp.text)["detail"] == "Not allowed"
+
+
+def test_send_invite_not_member():
+    header = create_auth_header(3)
+    resp = client.post("/send_invite?user_id={0}&band_id={1}".format(5, 1), headers=header)
+    assert resp.status_code == 400
+    assert json.loads(resp.text)["detail"] == "Not allowed"
+
+
+def test_send_invite_success():
+    header = create_auth_header(1)
+    resp = client.post("/send_invite?user_id={0}&band_id={1}".format(5, 1), headers=header)
+    assert resp.status_code == 200
+
+
+def test_user_login_success():
     # TODO test invalid credentials
+    data = {
+        "email": "jason@gmail.com",
+        "password": "test"
+    }
+    resp = client.get("/login", json=data)
+    assert resp.status_code == 200
+    jwt = resp.content.decode().replace("\"", "")
+    user = decode_jwt(jwt)
+    assert user["user_id"] == 1
+
+
+def test_user_login_invalid_email():
+    # TODO test invalid credentials
+    data = {
+        "email": "INVALID@gmail.com",
+        "password": "test"
+    }
+    resp = client.get("/login", json=data)
+    assert resp.status_code == 400
+
+
+def test_user_login_invalid_password():
+    # TODO test invalid credentials
+    data = {
+        "email": "jason@gmail.com",
+        "password": "INVALID"
+    }
+    resp = client.get("/login", json=data)
+    assert resp.status_code == 400
+
+
+def test_read_notification_success():
+    header = create_auth_header(5)
+    resp = client.put("/read_notification/{0}".format(1), headers=header)
+    assert resp.status_code == 200
+
+
+def test_read_notification_notif_does_not_exist():
+    header = create_auth_header(1)
+    resp = client.put("/read_notification/{0}".format(1000), headers=header)
+    assert resp.status_code == 404
+
+
+def test_read_notification_wrong_user():
+    header = create_auth_header(1)
+    resp = client.put("/read_notification/{0}".format(1), headers=header)
+    assert resp.status_code == 401
+
+
+def test_read_notification_already_read():
+    header = create_auth_header(1)
+    resp = client.put("/read_notification/{0}".format(3), headers=header)
+    assert resp.status_code == 400
+
+
+def test_get_notifications():
+    # No functional code
     pass
+
+
+def test_search():
+    # TODO BIG TODO
+    pass
+
+
+def test_user_online():
+    # TODO implement
+    pass
+
+
+def test_get_messages():
+    # No functional code
+    pass
+
+
+def create_ws_session(user_1_id, user_2_id, db):
+    session = client.websocket_connect("/ws")
+    session.send_text(sign_jwt(db.query(User).where(User.id == user_1_id).first()))
+    session.send_text(user_2_id)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_open_websocket_and_send_message():
+    # User 1 sends message to user 2
+    db = next(override_get_db())
+    session = create_ws_session(1, 2, db)
+    session.send_text("Hello")
+    await asyncio.sleep(.1)
+    one_to_two = db.query(DBMessage).filter(DBMessage.sender_user_id == 1, DBMessage.recipient_user_id == 2).all()
+    assert len(one_to_two) == 1
+    session.close()
+
+
+@pytest.mark.asyncio
+async def test_send_message():
+    db = next(override_get_db())
+    session = create_ws_session(1, 3, db)
+    session.send_text("Hello")
+    await asyncio.sleep(.1)
+    one_to_two = db.query(DBMessage).filter(DBMessage.sender_user_id == 1, DBMessage.recipient_user_id == 2).all()
+    assert len(one_to_two) == 1
+    session.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_jwt():
+    db = next(override_get_db())
+
+    with mock.patch.object(WebSocket, "close") as mock_close:
+        session = client.websocket_connect("/ws")
+        session.send_text(sign_jwt(db.query(User).where(User.id == 1).first()) + 'invalid')
+        await asyncio.sleep(.1)
+        mock_close.assert_called_once()
+        # real.close.assert_called_times(1)

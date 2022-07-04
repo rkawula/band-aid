@@ -8,7 +8,7 @@ import uvicorn
 import googlemaps
 from fastapi import FastAPI, Depends, HTTPException, Request
 from sqlalchemy import or_, and_
-from starlette.websockets import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState, WebSocket, WebSocketDisconnect
 
 from database_models.db_connector import get_database
 from sqlalchemy.orm import Session
@@ -18,7 +18,7 @@ from base_models.band_models import (
     PostUserRequest,
     PostBandRequest,
     PostSendInvite,
-    PostAcceptInvite, GetUserLogin,
+    GetUserLogin,
     JwtUser, Message
 )
 from database_models.db_connector import engine, DbSession
@@ -60,13 +60,14 @@ open_sockets = {}
 
 
 def location_to_coords(location: str, db):
-    # TODO Check with stored cache before going to google
+    # Check with stored cache before going to google
     dup = db.query(LocationCache).where(LocationCache.location == location.lower()).first()
     if dup:
         return {"lng": dup.lng, "lat": dup.lat}
 
     geocode_api = googlemaps.Client(key=GEOCODE_API_KEY)
     result = geocode_api.geocode(location)
+    # TODO verify that this returns a valid result and not a 400 or 500 error
     coordinates = result[0]['geometry']['location']
     if result:
         db.add(LocationCache(lng=coordinates['lng'], lat=coordinates['lat'], location=location))
@@ -114,6 +115,7 @@ async def root():
 
 @app.get("/band/{id}")
 async def get_band(id: int, db: Session = Depends(get_database)):
+    # TODO what to do if band doesn't exist?
     try:
         band = db.query(Band).where(Band.id == id).first()
     except exc.sa_exc.SQLAlchemyError:
@@ -139,7 +141,8 @@ async def post_create_band(post_band_request: PostBandRequest, user: JwtUser = D
         location=post_band_request.location
     )
     try:
-        add_and_flush(db, band)
+        db.add(band)
+        db.flush()
         bm = BandMember(user_id=user.user_id, band_id=band.id, admin=True)
         db.add(bm)
         db.commit()
@@ -199,29 +202,30 @@ async def register_user(user_request: PostUserRequest, db: Session = Depends(get
         location=user_request.location,
         longitude=lng_lat['lng'] if lng_lat else None,
         latitude=lng_lat['lat'] if lng_lat else None
-
     )
 
     try:
-        add_and_flush(db, user)
+        db.add(user)
+        db.flush()
         try:
             code = generate_code()
             ev = EmailVerification(user_id=user.id, code=code)
-            add_and_flush(db, ev)
+            db.add(ev)
+            db.flush()
             try:
                 band_invites = db.query(BandInviteByEmail).where(BandInviteByEmail.email == user.email,
                                                                  time.time() < BandInviteByEmail.expiration).all()
                 if band_invites:
                     for invite in band_invites:
                         db.add(BandMember(user_id=user.id, band_id=invite.band_id))
-                    db.delete(BandInviteByEmail).where(BandInviteByEmail.email == user.email)
-            except exc.sa_exc.SQLAlchemyError as err:
-                raise HTTPException(status_code=500, detail="Inviting to band error")
+                    db.query(BandInviteByEmail).where(BandInviteByEmail.email == user.email).delete()
+            except exc.sa_exc.SQLAlchemyError:
                 db.rollback()
-        except exc.sa_exc.SQLAlchemyError as err:
+                raise HTTPException(status_code=500, detail="Inviting to band error")
+        except exc.sa_exc.SQLAlchemyError:
             db.rollback()
             raise HTTPException(status_code=500, detail="Could not create verification code entry")
-    except exc.sa_exc.SQLAlchemyError as err:
+    except exc.sa_exc.SQLAlchemyError:
         db.rollback()
         raise HTTPException(status_code=500, detail="Could not create user entry")
 
@@ -237,11 +241,6 @@ async def register_user(user_request: PostUserRequest, db: Session = Depends(get
     return sign_jwt(user)
 
 
-def add_and_flush(db, row):
-    db.add(row)
-    db.flush()
-
-
 @app.get("/user/{id}")
 async def get_user(id: int, db: Session = Depends(get_database)):
     try:
@@ -255,11 +254,11 @@ async def get_user(id: int, db: Session = Depends(get_database)):
 async def delete_user(db: Session = Depends(get_database),
                       user: JwtUser = Depends(get_current_user)):
     try:
-        db.delete(BandInvite).where(BandInvite.user_id == user.user_id)
-        db.delete(Notification).where(Notification.recipient_user_id == user.user_id)
-        db.delete(BandMember).where(BandMember.user_id == user.user_id)
-        db.delete(LookingForBand).where(LookingForBand.user_id == user.user_id)
-        db.delete(User).where(User.id == user.user_id)
+        db.query(BandInvite).where(BandInvite.user_id == user.user_id).delete()
+        db.query(Notification).where(Notification.recipient_user_id == user.user_id).delete()
+        db.query(BandMember).where(BandMember.user_id == user.user_id).delete()
+        db.query(LookingForBand).where(LookingForBand.user_id == user.user_id).delete()
+        db.query(User).where(User.id == user.user_id).delete()
     except exc.sa_exc.SQLAlchemyError:
         db.rollback()
         raise HTTPException(status_code=500, detail="Could not get user")
@@ -289,7 +288,8 @@ async def update_user(user_request: PostUserRequest, db: Session = Depends(get_d
         # TODO if email changes set verified to false
         #  and send out new verification code + email
         #  and remove any existing verification code entries if not verified
-    except exc.sa_exc.SQLAlchemyError as err:
+    except exc.sa_exc.SQLAlchemyError:
+        db.rollback()
         raise HTTPException(status_code=500, detail="Could not update user")
     return {"Success"}
 
@@ -319,18 +319,19 @@ async def update_band(band_request: PostBandRequest, db: Session = Depends(get_d
 
 
 @app.delete("/delete_band")
-async def delete_band(band_request: PostBandRequest, db: Session = Depends(get_database),
+async def delete_band(band_id, db: Session = Depends(get_database),
                       user: JwtUser = Depends(get_current_user)):
     try:
-        bm = db.query(BandMember).where(BandMember.band_id == band_request.id).where(
+        bm = db.query(BandMember).where(BandMember.band_id == band_id).where(
             BandMember.user_id == user.user_id).first()
+        if not bm:
+            raise HTTPException(status_code=400, detail="Not a member")
         if not bm.admin:
-            raise HTTPException(status_code=400, detail="Not and admin")
-        band = db.query(Band).where(Band.id == band_request.id).first()
+            raise HTTPException(status_code=400, detail="Not an admin")
+        band = db.query(Band).where(Band.id == band_id).first()
 
-        db.delete(BandMember).where(
-            BandMember.user_id.in_(db.query(BandMember.user_id).where(BandMember.band_id == band_request.id)))
-        db.delete(LookingForMember).where(LookingForMember.band_id == band_request.id)
+        db.query(BandMember).where(BandMember.band_id == band_id).delete()
+        db.query(LookingForMember).where(LookingForMember.band_id == band_id).delete()
         db.delete(band)
         db.commit()
     except exc.sa_exc.SQLAlchemyError:
@@ -338,12 +339,12 @@ async def delete_band(band_request: PostBandRequest, db: Session = Depends(get_d
     return {"Success"}
 
 
-@app.get("/verify/{code}")
-async def verify_user_email(code: str, db: Session = Depends(get_database)):
+@app.put("/verify_email")
+async def verify_user_email(code, db: Session = Depends(get_database)):
     try:
         email_verification = db.query(EmailVerification).where(EmailVerification.code == code).first()
         if email_verification:
-            user = db.query(User).where(User.id == email_verification.id).first()
+            user = db.query(User).where(User.id == email_verification.user_id).first()
             user.email_verified = True
             db.delete(email_verification)
             db.commit()
@@ -355,10 +356,10 @@ async def verify_user_email(code: str, db: Session = Depends(get_database)):
 
 
 @app.post("/accept_invite")
-async def accept_invite(pai: PostAcceptInvite, db: Session = Depends(get_database),
+async def accept_invite(code, db: Session = Depends(get_database),
                         user: JwtUser = Depends(get_current_user)):
     try:
-        invite = db.query(BandInvite).where(BandInvite.code == pai.code).where(
+        invite = db.query(BandInvite).where(BandInvite.code == code).where(
             user.user_id == BandInvite.user_id).first()
         if invite:
             bm = BandMember(band_id=invite.band_id, user_id=user.user_id, admin=False)
@@ -369,14 +370,14 @@ async def accept_invite(pai: PostAcceptInvite, db: Session = Depends(get_databas
             raise HTTPException(status_code=400, detail="Invalid invite")
     except exc.sa_exc.SQLAlchemyError:
         raise HTTPException(status_code=500, detail="Could verify invite, try again later")
-    pass
 
 
 @app.post("/decline_invite")
-async def decline_invite(pai: PostAcceptInvite, db: Session = Depends(get_database),
+async def decline_invite(code, db: Session = Depends(get_database),
                          user: JwtUser = Depends(get_current_user)):
+    # TODO check if invite has expiration
     try:
-        invite = db.query(BandInvite).where(BandInvite.code == pai.code).where(
+        invite = db.query(BandInvite).where(BandInvite.code == code).where(
             user.user_id == BandInvite.user_id).first()
         if invite:
             db.delete(invite)
@@ -385,23 +386,22 @@ async def decline_invite(pai: PostAcceptInvite, db: Session = Depends(get_databa
             raise HTTPException(status_code=400, detail="Invalid invite")
     except exc.sa_exc.SQLAlchemyError:
         raise HTTPException(status_code=500, detail="Could verify invite, try again later")
-    pass
 
 
 @app.post("/send_invite")
-async def send_invite(psi: PostSendInvite, db: Session = Depends(get_database),
-                      user: JwtUser = Depends(get_current_user())):
+async def send_invite(user_id, band_id, db: Session = Depends(get_database),
+                      user: JwtUser = Depends(get_current_user)):
     try:
         band_member = db.query(BandMember).where(BandMember.user_id == user.user_id). \
-            where(BandMember.band_id == psi.band_id).first()
-        if not band_member.admin:
-            raise HTTPException(status_code=400, detail="Not admin")
-        is_current_band_member = db.query(BandMember).where(BandMember.band_id == psi.band_id). \
-            where(BandMember.user_id == psi.user_id).first()
+            where(BandMember.band_id == band_id).first()
+        if not band_member or not band_member.admin:
+            raise HTTPException(status_code=400, detail="Not allowed")
+        is_current_band_member = db.query(BandMember).where(BandMember.band_id == band_id). \
+            where(BandMember.user_id == user_id).first()
         if is_current_band_member:
             raise HTTPException(status_code=400, detail="Already a member")
 
-        invite = BandInvite(band_id=psi.band_id, user_id=psi.user_id, code=generate_code())
+        invite = BandInvite(band_id=band_id, user_id=user_id, code=generate_code())
         db.add(invite)
         db.commit()
     except exc.sa_exc.SQLAlchemyError:
@@ -409,7 +409,7 @@ async def send_invite(psi: PostSendInvite, db: Session = Depends(get_database),
         raise HTTPException(status_code=500, detail="Some database error")
 
 
-@app.post("/login")
+@app.get("/login")
 async def user_login(gul: GetUserLogin, db: Session = Depends(get_database)):
     user = db.query(User).where(User.email == gul.email).first()
     if user and verify_password(gul.password, user.password_hash):
@@ -424,9 +424,17 @@ async def read_notification(id: int, db: Session = Depends(get_database), user: 
         raise HTTPException(status_code=404, detail="Notification does not exist")
     if notif.recipient_user_id != user.user_id:
         raise HTTPException(status_code=401, detail="That is not your message, but you already know this")
+    if notif.read:
+        raise HTTPException(status_code=400, detail="Message already read")
     notif.read = True
     db.commit()
     return {"Success"}
+
+
+@app.get("/get_notifications")
+async def get_notification(db: Session = Depends(get_database), user: JwtUser = Depends(get_current_user)):
+    notifications = db.query(Notification).where(Notification.recipient_user_id == user.user_id).order_by(Notification.created_at.desc()).all()
+    return notifications
 
 
 def get_range_coordinates(lat, lng, range):
@@ -468,18 +476,18 @@ async def send_message(sender_user_id: int, message: Message, db: Session):
     recipient_user_id = message.recipient_user_id
     # get message text
     msg = message.message
-    recipient_ws = open_sockets.get(recipient_user_id)
+    recipient_web_sockets = open_sockets.get(recipient_user_id)
+    user_to_user_ws_connection = recipient_web_sockets.get(sender_user_id) if recipient_web_sockets else None
     db_msg = DBMessage(sender_user_id=sender_user_id, recipient_user_id=recipient_user_id, message=msg)
-    if recipient_ws:
+    if user_to_user_ws_connection:
         db_msg.read = True
     db.add(db_msg)
     db.commit()
 
     # notify all open websockets of recipient and sender of new message
-    sender_ws = open_sockets.get(sender_user_id)
-    if recipient_ws:
+    if user_to_user_ws_connection:
         broken_links = []
-        for socket in recipient_ws:
+        for socket in user_to_user_ws_connection:
             try:
                 await socket.send_json(db_msg.json())
             except RuntimeError:
@@ -488,8 +496,9 @@ async def send_message(sender_user_id: int, message: Message, db: Session):
 
         if broken_links:
             for broken_link in broken_links:
-                recipient_ws.remove(broken_link)
+                user_to_user_ws_connection.remove(broken_link)
 
+    sender_ws = open_sockets.get(sender_user_id).get(recipient_user_id)
     if sender_ws:
         broken_links = []
         for socket in sender_ws:
@@ -519,24 +528,34 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_dat
     await websocket.accept()
     jwt = await websocket.receive_text()
     user = get_current_user(jwt)
+
     if not user:
         await websocket.close()
         return
 
+    recipient_user_id = await websocket.receive_text()
     user_id = user.user_id
-    user_sockets = open_sockets.get(user_id)
-    if user_sockets:
-        user_sockets.append(websocket)
+    user_to_recipient_sockets = []
+    if open_sockets.get(user_id):
+        user_to_recipient_sockets = open_sockets.get(user_id).get(recipient_user_id)
     else:
-        open_sockets[user_id] = [websocket]
+        open_sockets[user_id] = {}
+        user_to_recipient_sockets = open_sockets[user_id]
+
+    if user_to_recipient_sockets:
+        user_to_recipient_sockets.append(websocket)
+    else:
+        all_user_sockets = open_sockets.get(user_id)
+        all_user_sockets[recipient_user_id] = [websocket]
+        user_to_recipient_sockets = all_user_sockets[recipient_user_id]
 
     while True:
         try:
-            message: Message = json.loads(await websocket.receive_text(), object_hook=lambda d: SimpleNamespace(**d))
-            await send_message(user_id, Message(recipient_user_id=message.recipient_user_id, message=message.message), db)
+            message = await websocket.receive_text()
+            await send_message(user_id, Message(recipient_user_id=recipient_user_id, message=message), db)
         except WebSocketDisconnect:
             try:
-                user_sockets.remove(websocket)
+                user_to_recipient_sockets.remove(websocket)
             except:
                 print("Socket already removed")
                 pass

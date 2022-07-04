@@ -24,10 +24,6 @@ class PostSendInvite(BaseModel):
     band_id: int
 
 
-class PostAcceptInvite(BaseModel):
-    code: str
-
-
 class GetUserLogin(BaseModel):
     email: str
     password: str

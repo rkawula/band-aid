@@ -62,7 +62,7 @@ class Notification(Base):
     recipient_user_id = Column(Integer, ForeignKey("user.id"), nullable=True)
     message = Column(String, nullable=False)
     read = Column(Boolean, nullable=False, default=False)
-    sent = Column(Boolean, nullable=False)
+    sent = Column(BigInteger, nullable=False, default=func.now())
     type = Column(Enum(NotificationType), nullable=False)
     expiration = Column(BigInteger)
 
